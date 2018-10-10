@@ -1,2 +1,2 @@
 # graphql-transport-ws
-WebSocket transport for GraphQL subscriptions
+WebSocket transport for GraphQL

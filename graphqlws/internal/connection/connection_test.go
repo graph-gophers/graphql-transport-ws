@@ -197,29 +197,29 @@ func (h *callbacksHandler) OnOperation(ctx context.Context, args *event.OnOperat
 
 func newConnection() *wsConnection {
 	return &wsConnection{
-		fromClient: make(chan json.RawMessage),
-		toClient:   make(chan json.RawMessage),
+		in:  make(chan json.RawMessage),
+		out: make(chan json.RawMessage),
 	}
 }
 
 type wsConnection struct {
-	fromClient chan json.RawMessage
-	toClient   chan json.RawMessage
+	in  chan json.RawMessage
+	out chan json.RawMessage
 }
 
 func (ws *wsConnection) test(t *testing.T, messages []message) {
 	for _, msg := range messages {
 		switch msg.intention {
 		case clientSends:
-			ws.fromClient <- json.RawMessage(msg.operationMessage)
+			ws.in <- json.RawMessage(msg.operationMessage)
 		case expectation:
-			requireEqualJSON(t, msg.operationMessage, <-ws.toClient)
+			requireEqualJSON(t, msg.operationMessage, <-ws.out)
 		}
 	}
 }
 
 func (ws *wsConnection) ReadJSON(v interface{}) error {
-	msg := <-ws.fromClient
+	msg := <-ws.in
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -232,7 +232,7 @@ func (ws *wsConnection) WriteJSON(v interface{}) error {
 	if err != nil {
 		return err
 	}
-	ws.toClient <- json.RawMessage(data)
+	ws.out <- json.RawMessage(data)
 	return nil
 }
 

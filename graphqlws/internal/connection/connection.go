@@ -142,7 +142,7 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 
 	opDone := map[string]func(){}
 	for {
-		msg := operationMessage{}
+		var msg operationMessage
 		err := conn.ws.ReadJSON(&msg)
 		if err != nil {
 			return

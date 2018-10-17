@@ -243,6 +243,9 @@ func (ws *wsConnection) SetWriteDeadline(t time.Time) error {
 }
 
 func (ws *wsConnection) Close() error {
+	close(ws.in)
+	close(ws.out)
+
 	return nil
 }
 

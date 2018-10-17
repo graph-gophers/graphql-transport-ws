@@ -46,10 +46,10 @@ type operationMessage struct {
 type initMessagePayload struct{}
 
 type connection struct {
-	cancel        func()
-	eventsHandler event.Handler
-	writeTimeout  time.Duration
-	ws            wsConnection
+	cancel       func()
+	handler      event.Handler
+	writeTimeout time.Duration
+	ws           wsConnection
 }
 
 // ReadLimit limits the maximum size of incoming messages
@@ -68,10 +68,10 @@ func WriteTimeout(d time.Duration) func(conn *connection) {
 
 // Connect implements the apollographql subscriptions-transport-ws protocol@v0.9.4
 // https://github.com/apollographql/subscriptions-transport-ws/blob/v0.9.4/PROTOCOL.md
-func Connect(ws wsConnection, eventsHandler event.Handler, options ...func(conn *connection)) func() {
+func Connect(ws wsConnection, handler event.Handler, options ...func(conn *connection)) func() {
 	conn := &connection{
-		eventsHandler: eventsHandler,
-		ws:            ws,
+		handler: handler,
+		ws:      ws,
 	}
 
 	defaultOpts := []func(conn *connection){
@@ -178,7 +178,7 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 				send(msg.ID, typeData, payload)
 			}
 			// TODO: timeout this call, to guard against poor clients
-			payload, onDone, err := conn.eventsHandler.OnOperation(ctx, args)
+			payload, onDone, err := conn.handler.OnOperation(ctx, args)
 			// query or mutation
 			if err != nil || payload != nil {
 				func() {

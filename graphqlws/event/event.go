@@ -12,9 +12,9 @@ type Handler interface {
 
 // OnOperationArgs are the inputs available to the OnOperation event handler
 type OnOperationArgs struct {
-	OperationID  string
-	Send         func(payload json.RawMessage)
-	StartMessage struct {
+	OperationID string
+	Send        func(payload json.RawMessage)
+	Payload     struct {
 		OperationName string                     `json:"operationName"`
 		Query         string                     `json:"query"`
 		Variables     map[string]json.RawMessage `json:"variables"`

@@ -167,7 +167,7 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 			}
 
 			args := &event.OnOperationArgs{OperationID: msg.ID}
-			if err := json.Unmarshal(msg.Payload, &args.StartMessage); err != nil {
+			if err := json.Unmarshal(msg.Payload, &args.Payload); err != nil {
 				ep := errPayload(fmt.Errorf("invalid payload for type: %s", msg.Type))
 				send(msg.ID, typeConnectionError, ep)
 				continue

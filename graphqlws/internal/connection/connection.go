@@ -150,7 +150,7 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 
 		switch msg.Type {
 		case typeConnectionInit:
-			initMsg := initMessagePayload{}
+			var initMsg initMessagePayload
 			if err := json.Unmarshal(msg.Payload, &initMsg); err != nil {
 				ep := errPayload(fmt.Errorf("invalid payload for type: %s", msg.Type))
 				send("", typeConnectionError, ep)

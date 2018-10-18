@@ -98,12 +98,6 @@ func (conn *connection) writeLoop(ctx context.Context) sendFunc {
 		select {
 		case <-stop:
 			return
-		default:
-		}
-
-		select {
-		case <-stop:
-			return
 		case out <- &operationMessage{ID: id, Type: omType, Payload: payload}:
 		}
 	}
@@ -117,6 +111,12 @@ func (conn *connection) writeLoop(ctx context.Context) sendFunc {
 			case <-ctx.Done():
 				return
 			case msg := <-out:
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
 				if err := conn.ws.SetWriteDeadline(time.Now().Add(conn.writeTimeout)); err != nil {
 					return
 				}

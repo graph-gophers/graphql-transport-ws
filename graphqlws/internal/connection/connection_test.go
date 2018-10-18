@@ -176,11 +176,11 @@ func TestConnect(t *testing.T) {
 			},
 		},
 	}
-	for _, r := range testTable {
-		t.Run(r.name, func(t *testing.T) {
+	for _, tt := range testTable {
+		t.Run(tt.name, func(t *testing.T) {
 			ws := newConnection()
-			go connection.Connect(ws, r.callbacks)
-			ws.test(t, r.messages)
+			go connection.Connect(ws, tt.callbacks)
+			ws.test(t, tt.messages)
 		})
 	}
 }

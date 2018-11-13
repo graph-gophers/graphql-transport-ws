@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
-	"github.com/graph-gophers/graphql-transport-ws/graphqlws/event"
 )
 
 type operationMessageType string
@@ -43,11 +41,22 @@ type operationMessage struct {
 	Type    operationMessageType `json:"type"`
 }
 
+type startMessagePayload struct {
+	OperationName string                 `json:"operationName"`
+	Query         string                 `json:"query"`
+	Variables     map[string]interface{} `json:"variables"`
+}
+
 type initMessagePayload struct{}
+
+// GraphQLService interface
+type GraphQLService interface {
+	Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]interface{}) (payloads <-chan interface{}, err error)
+}
 
 type connection struct {
 	cancel       func()
-	handler      event.Handler
+	service      GraphQLService
 	writeTimeout time.Duration
 	ws           wsConnection
 }
@@ -68,9 +77,9 @@ func WriteTimeout(d time.Duration) func(conn *connection) {
 
 // Connect implements the apollographql subscriptions-transport-ws protocol@v0.9.4
 // https://github.com/apollographql/subscriptions-transport-ws/blob/v0.9.4/PROTOCOL.md
-func Connect(ws wsConnection, handler event.Handler, options ...func(conn *connection)) func() {
+func Connect(ws wsConnection, service GraphQLService, options ...func(conn *connection)) func() {
 	conn := &connection{
-		handler: handler,
+		service: service,
 		ws:      ws,
 	}
 
@@ -166,42 +175,46 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 				continue
 			}
 
-			args := &event.OnOperationArgs{ID: msg.ID}
-			if err := json.Unmarshal(msg.Payload, &args.Payload); err != nil {
+			var osp startMessagePayload
+			if err := json.Unmarshal(msg.Payload, &osp); err != nil {
 				ep := errPayload(fmt.Errorf("invalid payload for type: %s", msg.Type))
 				send(msg.ID, typeConnectionError, ep)
 				continue
 			}
 
-			// TODO: ensure args.Send doesn't work after typeStop or onDone()
-			args.Send = func(payload json.RawMessage) {
-				send(msg.ID, typeData, payload)
-			}
+			opCtx, cancel := context.WithCancel(ctx)
 			// TODO: timeout this call, to guard against poor clients
-			payload, onDone, err := conn.handler.OnOperation(ctx, args)
-			// query or mutation
-			if err != nil || payload != nil {
-				func() {
-					defer func() {
-						if onDone != nil {
-							onDone()
-						}
-						send(msg.ID, typeComplete, nil)
-					}()
-
-					if err != nil {
-						send(msg.ID, typeError, errPayload(err))
-						return
-					}
-					send(msg.ID, typeData, payload)
-				}()
+			c, err := conn.service.Subscribe(opCtx, osp.Query, osp.OperationName, osp.Variables)
+			if err != nil {
+				cancel()
+				send(msg.ID, typeError, errPayload(err))
+				send(msg.ID, typeComplete, nil)
 				continue
 			}
 
-			// subscription
-			if onDone != nil {
-				opDone[msg.ID] = onDone
-			}
+			opDone[msg.ID] = cancel
+
+			go func() {
+				defer cancel()
+				for {
+					select {
+					case <-opCtx.Done():
+						return
+					case payload, more := <-c:
+						if !more {
+							send(msg.ID, typeComplete, nil)
+							return
+						}
+
+						jsonPayload, err := json.Marshal(payload)
+						if err != nil {
+							send(msg.ID, typeError, errPayload(err))
+							continue
+						}
+						send(msg.ID, typeData, jsonPayload)
+					}
+				}
+			}()
 
 		case typeStop:
 			onDone, ok := opDone[msg.ID]

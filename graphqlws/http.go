@@ -5,7 +5,6 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/graph-gophers/graphql-transport-ws/graphqlws/event"
 	"github.com/graph-gophers/graphql-transport-ws/graphqlws/internal/connection"
 )
 
@@ -16,28 +15,27 @@ var upgrader = websocket.Upgrader{
 	Subprotocols: []string{protocolGraphQLWS},
 }
 
-// Handler is a GraphQL websocket subscription handler
-type Handler struct {
-	eventsHandler event.Handler
-}
+// NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
+func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		for _, subprotocol := range websocket.Subprotocols(r) {
+			if subprotocol == "graphql-ws" {
+				ws, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
 
-// NewHandler returns a new Handler
-func NewHandler(eh event.Handler) *Handler {
-	return &Handler{eventsHandler: eh}
-}
+				if ws.Subprotocol() != protocolGraphQLWS {
+					ws.Close()
+					return
+				}
 
-func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ws, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
+				go connection.Connect(ws, svc)
+				return
+			}
+		}
+
+		// Fallback to HTTP
+		httpHandler.ServeHTTP(w, r)
 	}
-
-	if ws.Subprotocol() != protocolGraphQLWS {
-		ws.Close()
-		return
-	}
-
-	go connection.Connect(ws, h.eventsHandler)
-
-	return
 }

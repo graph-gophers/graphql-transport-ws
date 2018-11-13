@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/graph-gophers/graphql-transport-ws/graphqlws/event"
 	"github.com/graph-gophers/graphql-transport-ws/graphqlws/internal/connection"
 )
 
@@ -30,13 +29,12 @@ type message struct {
 
 func TestConnect(t *testing.T) {
 	testTable := []struct {
-		name      string
-		callbacks *callbacksHandler
-		messages  []message
+		name     string
+		svc      *gqlService
+		messages []message
 	}{
 		{
-			name:      "connection_init_ok",
-			callbacks: &callbacksHandler{},
+			name: "connection_init_ok",
 			messages: []message{
 				{
 					intention: clientSends,
@@ -52,8 +50,7 @@ func TestConnect(t *testing.T) {
 			},
 		},
 		{
-			name:      "connection_init_error",
-			callbacks: &callbacksHandler{},
+			name: "connection_init_error",
 			messages: []message{
 				{
 					intention: clientSends,
@@ -74,10 +71,8 @@ func TestConnect(t *testing.T) {
 			},
 		},
 		{
-			name: "start_query_ok",
-			callbacks: &callbacksHandler{
-				payload: json.RawMessage(`{"data":{},"errors":null}`),
-			},
+			name: "start_ok",
+			svc:  newGQLService(`{"data":{},"errors":null}`),
 			messages: []message{
 				{
 					intention: clientSends,
@@ -109,9 +104,7 @@ func TestConnect(t *testing.T) {
 		},
 		{
 			name: "start_query_data_error",
-			callbacks: &callbacksHandler{
-				payload: json.RawMessage(`{"data":null,"errors":[{"message":"a error"}]}`),
-			},
+			svc:  newGQLService(`{"data":null,"errors":[{"message":"a error"}]}`),
 			messages: []message{
 				{
 					intention: clientSends,
@@ -144,7 +137,7 @@ func TestConnect(t *testing.T) {
 		},
 		{
 			name: "start_query_error",
-			callbacks: &callbacksHandler{
+			svc: &gqlService{
 				err: errors.New("some error"),
 			},
 			messages: []message{
@@ -179,20 +172,29 @@ func TestConnect(t *testing.T) {
 	for _, tt := range testTable {
 		t.Run(tt.name, func(t *testing.T) {
 			ws := newConnection()
-			go connection.Connect(ws, tt.callbacks)
+			go connection.Connect(ws, tt.svc)
 			ws.test(t, tt.messages)
 		})
 	}
 }
 
-type callbacksHandler struct {
-	payload json.RawMessage
-	cancel  func()
-	err     error
+type gqlService struct {
+	payloads <-chan interface{}
+	err      error
 }
 
-func (h *callbacksHandler) OnOperation(ctx context.Context, args *event.OnOperationArgs) (json.RawMessage, func(), error) {
-	return h.payload, h.cancel, h.err
+func newGQLService(pp ...string) *gqlService {
+	c := make(chan interface{}, len(pp))
+	for _, p := range pp {
+		c <- json.RawMessage(p)
+	}
+	close(c)
+
+	return &gqlService{payloads: c}
+}
+
+func (h *gqlService) Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]interface{}) (payloads <-chan interface{}, err error) {
+	return h.payloads, h.err
 }
 
 func newConnection() *wsConnection {

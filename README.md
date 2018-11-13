@@ -1,4 +1,5 @@
 # graphql-transport-ws
+[![Build Status](https://travis-ci.org/graph-gophers/graphql-transport-ws.svg?branch=master)](https://travis-ci.org/graph-gophers/graphql-transport-ws)
 
 **(Work in progress!)**
 

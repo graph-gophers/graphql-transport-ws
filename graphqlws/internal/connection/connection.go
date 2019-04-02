@@ -47,18 +47,26 @@ type startMessagePayload struct {
 	Variables     map[string]interface{} `json:"variables"`
 }
 
-type initMessagePayload struct{}
-
 // GraphQLService interface
 type GraphQLService interface {
 	Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]interface{}) (payloads <-chan interface{}, err error)
 }
 
+type AuthenticateFunc func(ctx context.Context, payload map[string]interface{}) error
+
 type connection struct {
-	cancel       func()
-	service      GraphQLService
-	writeTimeout time.Duration
-	ws           wsConnection
+	cancel           func()
+	service          GraphQLService
+	writeTimeout     time.Duration
+	ws               wsConnection
+	authenticated    bool
+	authenticateFunc AuthenticateFunc
+}
+
+func Authentication(f AuthenticateFunc) func(conn *connection) {
+	return func(conn *connection) {
+		conn.authenticateFunc = f
+	}
 }
 
 // ReadLimit limits the maximum size of incoming messages
@@ -159,15 +167,31 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 
 		switch msg.Type {
 		case typeConnectionInit:
-			var initMsg initMessagePayload
+
+			var initMsg map[string]interface{}
 			if err := json.Unmarshal(msg.Payload, &initMsg); err != nil {
 				ep := errPayload(fmt.Errorf("invalid payload for type: %s", msg.Type))
 				send("", typeConnectionError, ep)
 				continue
 			}
+
+			if conn.authenticateFunc != nil {
+				if err := conn.authenticateFunc(ctx, initMsg); err != nil {
+					send("", typeConnectionError, errPayload(err))
+					continue
+				}
+			}
+			conn.authenticated = true
 			send("", typeConnectionAck, nil)
 
 		case typeStart:
+
+			if !conn.authenticated && conn.authenticateFunc != nil {
+				ep := errPayload(errors.New("authentication required."))
+				send("", typeConnectionError, ep)
+				continue
+			}
+
 			// TODO: check an operation with the same ID hasn't been started already
 			if msg.ID == "" {
 				ep := errPayload(errors.New("missing ID for start operation"))

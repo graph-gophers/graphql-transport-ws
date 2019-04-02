@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 )
 
@@ -52,7 +53,7 @@ type GraphQLService interface {
 	Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]interface{}) (payloads <-chan interface{}, err error)
 }
 
-type AuthenticateFunc func(ctx context.Context, payload map[string]interface{}) error
+type AuthenticateFunc func(ctx context.Context, r *http.Request, payload map[string]interface{}) error
 
 type connection struct {
 	cancel           func()
@@ -61,11 +62,13 @@ type connection struct {
 	ws               wsConnection
 	authenticated    bool
 	authenticateFunc AuthenticateFunc
+	request          *http.Request
 }
 
-func Authentication(f AuthenticateFunc) func(conn *connection) {
+func Authentication(r *http.Request, f AuthenticateFunc) func(conn *connection) {
 	return func(conn *connection) {
 		conn.authenticateFunc = f
+		conn.request = r
 	}
 }
 
@@ -176,7 +179,7 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 			}
 
 			if conn.authenticateFunc != nil {
-				if err := conn.authenticateFunc(ctx, initMsg); err != nil {
+				if err := conn.authenticateFunc(ctx, conn.request, initMsg); err != nil {
 					send("", typeConnectionError, errPayload(err))
 					continue
 				}

@@ -34,7 +34,7 @@ func NewHandlerFuncWithAuth(svc connection.GraphQLService, httpHandler http.Hand
 					return
 				}
 
-				go connection.Connect(ws, svc, connection.Authentication(authFunc))
+				go connection.Connect(ws, svc, connection.Authentication(r, authFunc))
 				return
 			}
 		}

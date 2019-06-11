@@ -227,6 +227,9 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 		case typeConnectionTerminate:
 			return
 
+		case typeConnectionKeepAlive:
+			send("", typeConnectionKeepAlive, nil)
+
 		default:
 			ep := errPayload(fmt.Errorf("unknown operation message of type: %s", msg.Type))
 			send(msg.ID, typeError, ep)

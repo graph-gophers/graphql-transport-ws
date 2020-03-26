@@ -1,9 +1,9 @@
 package graphqlws
 
 import (
-	"github.com/gorilla/websocket"
 	"net/http"
 
+	"github.com/gorilla/websocket"
 	"github.com/graph-gophers/graphql-transport-ws/graphqlws/internal/connection"
 )
 

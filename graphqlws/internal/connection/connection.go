@@ -56,13 +56,13 @@ type GraphQLService interface {
 type AuthenticateFunc func(ctx context.Context, r *http.Request, payload map[string]interface{}) error
 
 type connection struct {
+	authenticated    bool
+	authenticateFunc AuthenticateFunc
 	cancel           func()
+	request          *http.Request
 	service          GraphQLService
 	writeTimeout     time.Duration
 	ws               wsConnection
-	authenticated    bool
-	authenticateFunc AuthenticateFunc
-	request          *http.Request
 }
 
 func Authentication(r *http.Request, f AuthenticateFunc) func(conn *connection) {
@@ -170,7 +170,6 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 
 		switch msg.Type {
 		case typeConnectionInit:
-
 			var initMsg map[string]interface{}
 			if err := json.Unmarshal(msg.Payload, &initMsg); err != nil {
 				ep := errPayload(fmt.Errorf("invalid payload for type: %s", msg.Type))
@@ -183,12 +182,11 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 					send("", typeConnectionError, errPayload(err))
 					continue
 				}
+				conn.authenticated = true
 			}
-			conn.authenticated = true
 			send("", typeConnectionAck, nil)
 
 		case typeStart:
-
 			if !conn.authenticated && conn.authenticateFunc != nil {
 				ep := errPayload(errors.New("authentication required."))
 				send("", typeConnectionError, ep)

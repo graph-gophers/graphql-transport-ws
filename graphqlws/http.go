@@ -15,12 +15,7 @@ var upgrader = websocket.Upgrader{
 }
 
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
-func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler) http.HandlerFunc {
-	return NewHandlerFuncWithAuth(svc, httpHandler, nil)
-}
-
-// NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
-func NewHandlerFuncWithAuth(svc connection.GraphQLService, httpHandler http.Handler, authFunc connection.AuthenticateFunc) http.HandlerFunc {
+func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler, authFunc connection.AuthenticateFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		for _, subprotocol := range websocket.Subprotocols(r) {
 			if subprotocol == "graphql-ws" {
@@ -34,7 +29,11 @@ func NewHandlerFuncWithAuth(svc connection.GraphQLService, httpHandler http.Hand
 					return
 				}
 
-				go connection.Connect(ws, svc, connection.Authentication(r, authFunc))
+				if authFunc != nil {
+					go connection.Connect(ws, svc, connection.Authentication(r, authFunc))
+					return
+				}
+				go connection.Connect(ws, svc, nil)
 				return
 			}
 		}

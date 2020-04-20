@@ -19,7 +19,7 @@ var upgrader = websocket.Upgrader{
 func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		for _, subprotocol := range websocket.Subprotocols(r) {
-			if subprotocol == "graphql-ws" {
+			if subprotocol == protocolGraphQLWS {
 				ws, err := upgrader.Upgrade(w, r, nil)
 				if err != nil {
 					return

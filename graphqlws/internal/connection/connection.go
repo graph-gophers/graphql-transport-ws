@@ -220,19 +220,18 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 
 			opCtx, cancel := context.WithCancel(ctx)
 			opCtx = context.WithValue(opCtx, "Header", header)
-
-			// TODO: timeout this call, to guard against poor clients
-			c, err := conn.service.Subscribe(opCtx, osp.Query, osp.OperationName, osp.Variables)
-			if err != nil {
-				cancel()
-				send(msg.ID, typeError, errPayload(err))
-				send(msg.ID, typeComplete, nil)
-				continue
-			}
-
 			opDone.add(msg.ID, cancel)
 
 			go func() {
+				// TODO: timeout this call, to guard against poor clients
+				c, err := conn.service.Subscribe(opCtx, osp.Query, osp.OperationName, osp.Variables)
+				if err != nil {
+					cancel()
+					opDone.delete(msg.ID)
+					send(msg.ID, typeError, errPayload(err))
+					send(msg.ID, typeComplete, nil)
+					return
+				}
 				defer cancel()
 				for {
 					select {

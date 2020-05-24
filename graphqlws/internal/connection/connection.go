@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -59,6 +60,37 @@ type connection struct {
 	service      GraphQLService
 	writeTimeout time.Duration
 	ws           wsConnection
+}
+
+type operationMap struct {
+	ops map[string]func()
+	mtx *sync.RWMutex
+}
+
+func newOperationMap() operationMap {
+	return operationMap{
+		ops: make(map[string]func()),
+		mtx: &sync.RWMutex{},
+	}
+}
+
+func (o *operationMap) add(name string, done func()) {
+	o.mtx.Lock()
+	o.ops[name] = done
+	o.mtx.Unlock()
+}
+
+func (o *operationMap) get(name string) (func(), bool) {
+	o.mtx.RLock()
+	f, ok := o.ops[name]
+	o.mtx.RUnlock()
+	return f, ok
+}
+
+func (o *operationMap) delete(name string) {
+	o.mtx.Lock()
+	delete(o.ops, name)
+	o.mtx.Unlock()
 }
 
 // ReadLimit limits the maximum size of incoming messages
@@ -149,7 +181,7 @@ func (conn *connection) close() {
 func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 	defer conn.close()
 
-	opDone := map[string]func(){}
+	opDone := newOperationMap()
 	for {
 		var msg operationMessage
 		err := conn.ws.ReadJSON(&msg)
@@ -192,7 +224,7 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 				continue
 			}
 
-			opDone[msg.ID] = cancel
+			opDone.add(msg.ID, cancel)
 
 			go func() {
 				defer cancel()
@@ -217,9 +249,9 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 			}()
 
 		case typeStop:
-			onDone, ok := opDone[msg.ID]
+			onDone, ok := opDone.get(msg.ID)
 			if ok {
-				delete(opDone, msg.ID)
+				opDone.delete(msg.ID)
 				onDone()
 			}
 			send(msg.ID, typeComplete, nil)

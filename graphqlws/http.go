@@ -2,6 +2,7 @@ package graphqlws
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/gorilla/websocket"
@@ -91,25 +92,30 @@ func (h *handler) NewHandlerFunc(svc connection.GraphQLService, httpHandler http
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		for _, subprotocol := range websocket.Subprotocols(r) {
-			if subprotocol == ProtocolGraphQLWS {
-				ctx, err := buildContext(r, o.contextGenerators)
+			if subprotocol != ProtocolGraphQLWS {
+				continue
+			}
 
-				ws, err := h.Upgrader.Upgrade(w, r, nil)
-				if err != nil {
-					return
-				}
-
-				if ws.Subprotocol() != ProtocolGraphQLWS {
-					ws.Close()
-					return
-				}
-
-				go connection.Connect(ctx, ws, svc)
+			ctx, err := buildContext(r, o.contextGenerators)
+			ws, err := h.Upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				w.Header().Set("X-WebSocket-Upgrade-Failure", err.Error())
 				return
 			}
+
+			if ws.Subprotocol() != ProtocolGraphQLWS {
+				w.Header().Set("X-WebSocket-Upgrade-Failure",
+					fmt.Sprintf("upgraded websocket has wrong subprotocol (%s)", ws.Subprotocol()))
+				ws.Close()
+				return
+			}
+
+			go connection.Connect(ctx, ws, svc)
+			return
 		}
 
 		// Fallback to HTTP
+		w.Header().Set("X-WebSocket-Upgrade-Failure", "no subprotocols available")
 		httpHandler.ServeHTTP(w, r)
 	}
 }

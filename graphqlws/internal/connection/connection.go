@@ -149,6 +149,7 @@ func (conn *connection) close() {
 func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 	defer conn.close()
 	opDone := map[string]func(){}
+	var header json.RawMessage
 	for {
 		
 		err := conn.ws.ReadJSON(&msg)
@@ -165,7 +166,7 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 				continue
 			}
 			send("", typeConnectionAck, nil)
-                       
+			header =msg.Payload
 
 		case typeStart:
 			// TODO: check an operation with the same ID hasn't been started already
@@ -183,7 +184,8 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 			}
 
 			opCtx, cancel := context.WithCancel(ctx)
-                       
+			opCtx = context.WithValue(ctx,"Header",header)
+
 			// TODO: timeout this call, to guard against poor clients
 			c, err := conn.service.Subscribe(opCtx, osp.Query, osp.OperationName, osp.Variables)
 			if err != nil {

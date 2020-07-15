@@ -5,7 +5,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/graph-gophers/graphql-transport-ws/graphqlws/internal/connection"
+	"github.com/dgraph-io/graphql-transport-ws/graphqlws/internal/connection"
 )
 
 const protocolGraphQLWS = "graphql-ws"

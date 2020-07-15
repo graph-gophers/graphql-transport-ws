@@ -152,6 +152,7 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 	var header json.RawMessage
 	for {
 
+		var msg operationMessage
 		err := conn.ws.ReadJSON(&msg)
 		if err != nil {
 			return

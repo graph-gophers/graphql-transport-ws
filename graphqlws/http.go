@@ -30,7 +30,7 @@ func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler) htt
 					return
 				}
 
-				go connection.Connect(ws, svc)
+				go connection.Connect(r.Context(), ws, svc)
 				return
 			}
 		}

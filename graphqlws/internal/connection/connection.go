@@ -77,7 +77,7 @@ func WriteTimeout(d time.Duration) func(conn *connection) {
 
 // Connect implements the apollographql subscriptions-transport-ws protocol@v0.9.4
 // https://github.com/apollographql/subscriptions-transport-ws/blob/v0.9.4/PROTOCOL.md
-func Connect(ctx context.Context, ws wsConnection, service GraphQLService, options ...func(conn *connection)) func() {
+func Connect(ws wsConnection, service GraphQLService, options ...func(conn *connection)) func() {
 	conn := &connection{
 		service: service,
 		ws:      ws,
@@ -92,7 +92,7 @@ func Connect(ctx context.Context, ws wsConnection, service GraphQLService, optio
 		opt(conn)
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(context.Background())
 	conn.cancel = cancel
 	conn.readLoop(ctx, conn.writeLoop(ctx))
 

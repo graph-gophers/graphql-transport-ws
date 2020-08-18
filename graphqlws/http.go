@@ -1,9 +1,8 @@
 package graphqlws
 
 import (
-	"net/http"
-
 	"github.com/gorilla/websocket"
+	"net/http"
 
 	"github.com/graph-gophers/graphql-transport-ws/graphqlws/internal/connection"
 )
@@ -17,6 +16,11 @@ var upgrader = websocket.Upgrader{
 
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
 func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler) http.HandlerFunc {
+	return NewHandlerFuncWithAuth(svc, httpHandler, nil)
+}
+
+// NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
+func NewHandlerFuncWithAuth(svc connection.GraphQLService, httpHandler http.Handler, authFunc connection.AuthenticateFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		for _, subprotocol := range websocket.Subprotocols(r) {
 			if subprotocol == "graphql-ws" {
@@ -30,7 +34,7 @@ func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler) htt
 					return
 				}
 
-				go connection.Connect(ws, svc)
+				go connection.Connect(ws, svc, connection.Authentication(r, authFunc))
 				return
 			}
 		}

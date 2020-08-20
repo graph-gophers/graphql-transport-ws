@@ -16,8 +16,11 @@ var upgrader = websocket.Upgrader{
 	Subprotocols: []string{protocolGraphQLWS},
 }
 
+// ContextBuilderFunc takes a context and the http request which can be used to pull values
+// out of the request context and put into the supplied context.
 type ContextBuilderFunc func(ctx context.Context, r *http.Request) (context.Context, error)
 
+// Option applies configuration when a graphql-ws subprotocol is found
 type Option interface {
 	apply(*options)
 }
@@ -42,6 +45,7 @@ func applyOptions(opts ...Option) *options {
 	return &o
 }
 
+// WithContextBuilder adds a context builder option
 func WithContextBuilder(f ContextBuilderFunc) Option {
 	return optionFunc(func(o *options) {
 		o.contextBuilders = append(o.contextBuilders, f)
@@ -83,4 +87,3 @@ func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler, opt
 		httpHandler.ServeHTTP(w, r)
 	}
 }
-

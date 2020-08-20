@@ -1,6 +1,7 @@
 package graphqlws
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/gorilla/websocket"
@@ -15,11 +16,54 @@ var upgrader = websocket.Upgrader{
 	Subprotocols: []string{protocolGraphQLWS},
 }
 
+type ContextBuilderFunc func(ctx context.Context, r *http.Request) (context.Context, error)
+
+type Option interface {
+	apply(*options)
+}
+
+type options struct {
+	contextBuilders []ContextBuilderFunc
+}
+
+type optionFunc func(*options)
+
+func (f optionFunc) apply(o *options) {
+	f(o)
+}
+
+func applyOptions(opts ...Option) *options {
+	var o options
+
+	for _, op := range opts {
+		op.apply(&o)
+	}
+
+	return &o
+}
+
+func WithContextBuilder(f ContextBuilderFunc) Option {
+	return optionFunc(func(o *options) {
+		o.contextBuilders = append(o.contextBuilders, f)
+	})
+}
+
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
-func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler) http.HandlerFunc {
+func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler, options ...Option) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		for _, subprotocol := range websocket.Subprotocols(r) {
 			if subprotocol == "graphql-ws" {
+				o := applyOptions(options...)
+
+				var err error
+				ctx := context.Background()
+				for _, b := range o.contextBuilders {
+					ctx, err = b(ctx, r)
+					if err != nil {
+						return
+					}
+				}
+
 				ws, err := upgrader.Upgrade(w, r, nil)
 				if err != nil {
 					return
@@ -30,7 +74,7 @@ func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler) htt
 					return
 				}
 
-				go connection.Connect(ws, svc)
+				go connection.Connect(ctx, ws, svc)
 				return
 			}
 		}
@@ -39,3 +83,4 @@ func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler) htt
 		httpHandler.ServeHTTP(w, r)
 	}
 }
+

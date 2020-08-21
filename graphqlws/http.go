@@ -59,10 +59,11 @@ func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler, opt
 			if subprotocol == "graphql-ws" {
 				o := applyOptions(options...)
 
-				var err error
 				ctx := context.Background()
 				for _, b := range o.contextBuilders {
+					var err error
 					ctx, err = b(ctx, r)
+					http.Error(w, "error test", 403)
 					if err != nil {
 						return
 					}

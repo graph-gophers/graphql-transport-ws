@@ -16,54 +16,30 @@ var upgrader = websocket.Upgrader{
 	Subprotocols: []string{protocolGraphQLWS},
 }
 
-// ContextBuilderFunc takes a context and the http request which can be used to pull values
-// out of the request context and put into the supplied context.
-type ContextBuilderFunc func(ctx context.Context, r *http.Request) (context.Context, error)
+// The HandlerFunc type is an adapter to allow the use
+// of ordinary functions as websocket connection handlers.
+type HandlerFunc func(context.Context, *http.Request) (context.Context, error)
 
-// Option applies configuration when a graphql-ws subprotocol is found
-type Option interface {
-	apply(*options)
+// BuildContext calls f(ctx, r) and returns a context and error
+func (f HandlerFunc) BuildContext(ctx context.Context, r *http.Request) (context.Context, error) {
+	return f(ctx, r)
 }
 
-type options struct {
-	contextBuilders []ContextBuilderFunc
-}
-
-type optionFunc func(*options)
-
-func (f optionFunc) apply(o *options) {
-	f(o)
-}
-
-func applyOptions(opts ...Option) *options {
-	var o options
-
-	for _, op := range opts {
-		op.apply(&o)
-	}
-
-	return &o
-}
-
-// WithContextBuilder adds a context builder option
-func WithContextBuilder(f ContextBuilderFunc) Option {
-	return optionFunc(func(o *options) {
-		o.contextBuilders = append(o.contextBuilders, f)
-	})
+// A Handler manages the context prior to creating the websocket go routine
+type Handler interface {
+	BuildContext(context.Context, *http.Request) (context.Context, error)
 }
 
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
-func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler, options ...Option) http.HandlerFunc {
+func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler, wsHandler ...Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		for _, subprotocol := range websocket.Subprotocols(r) {
 			if subprotocol == "graphql-ws" {
-				o := applyOptions(options...)
-
 				ctx := context.Background()
-				for _, b := range o.contextBuilders {
+
+				for _, h := range wsHandler {
 					var err error
-					ctx, err = b(ctx, r)
-					http.Error(w, "error test", 403)
+					ctx, err = h.BuildContext(ctx, r)
 					if err != nil {
 						return
 					}

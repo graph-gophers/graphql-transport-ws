@@ -16,30 +16,35 @@ var upgrader = websocket.Upgrader{
 	Subprotocols: []string{protocolGraphQLWS},
 }
 
-// The HandlerFunc type is an adapter to allow the use
-// of ordinary functions as websocket connection handlers.
-type HandlerFunc func(context.Context, *http.Request) (context.Context, error)
+// The ContextGenerator takes a context and the http request it can be used
+// to take values out of the request context and assign them to a new context
+// that will be supplied to the web socket connection go routine and be accessible
+// in the resolver.
+// The http request context should not be modified as any changes made will
+// not be accessible in the resolver.
+type ContextGeneratorFunc func(context.Context, *http.Request) (context.Context, error)
 
 // BuildContext calls f(ctx, r) and returns a context and error
-func (f HandlerFunc) BuildContext(ctx context.Context, r *http.Request) (context.Context, error) {
+func (f ContextGeneratorFunc) BuildContext(ctx context.Context, r *http.Request) (context.Context, error) {
 	return f(ctx, r)
 }
 
-// A Handler manages the context prior to creating the websocket go routine
-type Handler interface {
+// A ContextGenerator handles any changes made to the the connection context prior
+// to creating the web socket connection routine.
+type ContextGenerator interface {
 	BuildContext(context.Context, *http.Request) (context.Context, error)
 }
 
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
-func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler, wsHandler ...Handler) http.HandlerFunc {
+func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler, contextGenerator ...ContextGenerator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		for _, subprotocol := range websocket.Subprotocols(r) {
 			if subprotocol == "graphql-ws" {
 				ctx := context.Background()
 
-				for _, h := range wsHandler {
+				for _, g := range contextGenerator {
 					var err error
-					ctx, err = h.BuildContext(ctx, r)
+					ctx, err = g.BuildContext(ctx, r)
 					if err != nil {
 						return
 					}

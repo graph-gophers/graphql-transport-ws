@@ -18,7 +18,7 @@ var upgrader = websocket.Upgrader{
 
 // The ContextGenerator takes a context and the http request it can be used
 // to take values out of the request context and assign them to a new context
-// that will be supplied to the web socket connection go routine and be accessible
+// that will be supplied to the websocket connection go routine and be accessible
 // in the resolver.
 // The http request context should not be modified as any changes made will
 // not be accessible in the resolver.
@@ -30,19 +30,53 @@ func (f ContextGeneratorFunc) BuildContext(ctx context.Context, r *http.Request)
 }
 
 // A ContextGenerator handles any changes made to the the connection context prior
-// to creating the web socket connection routine.
+// to creating the websocket connection routine.
 type ContextGenerator interface {
 	BuildContext(context.Context, *http.Request) (context.Context, error)
 }
 
+// Option applies configuration when a graphql websocket connection is handled
+type Option interface {
+	apply(*options)
+}
+
+type options struct {
+	contextGenerators []ContextGenerator
+}
+
+type optionFunc func(*options)
+
+func (f optionFunc) apply(o *options) {
+	f(o)
+}
+
+// WithContextGenerator specifies that the background context of the websocket connection go routine
+// should be built upon by executing provided context generators
+func WithContextGenerator(f ContextGenerator) Option {
+	return optionFunc(func(o *options) {
+		o.contextGenerators = append(o.contextGenerators, f)
+	})
+}
+
+func applyOptions(opts ...Option) *options {
+	var o options
+
+	for _, op := range opts {
+		op.apply(&o)
+	}
+
+	return &o
+}
+
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
-func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler, contextGenerator ...ContextGenerator) http.HandlerFunc {
+func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler, options ...Option) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		for _, subprotocol := range websocket.Subprotocols(r) {
 			if subprotocol == "graphql-ws" {
-				ctx := context.Background()
+				o := applyOptions(options...)
 
-				for _, g := range contextGenerator {
+				ctx := context.Background()
+				for _, g := range o.contextGenerators {
 					var err error
 					ctx, err = g.BuildContext(ctx, r)
 					if err != nil {

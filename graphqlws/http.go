@@ -73,15 +73,9 @@ func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler, opt
 	return func(w http.ResponseWriter, r *http.Request) {
 		for _, subprotocol := range websocket.Subprotocols(r) {
 			if subprotocol == "graphql-ws" {
-				o := applyOptions(options...)
-
-				ctx := context.Background()
-				for _, g := range o.contextGenerators {
-					var err error
-					ctx, err = g.BuildContext(ctx, r)
-					if err != nil {
-						return
-					}
+				ctx, err := processOptions(r, options...)
+				if err != nil {
+					return
 				}
 
 				ws, err := upgrader.Upgrade(w, r, nil)
@@ -102,4 +96,23 @@ func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler, opt
 		// Fallback to HTTP
 		httpHandler.ServeHTTP(w, r)
 	}
+}
+
+func processOptions(r *http.Request, options ...Option) (context.Context, error) {
+	ctx := context.Background()
+	if options == nil {
+		return ctx, nil
+	}
+
+	o := applyOptions(options...)
+
+	for _, g := range o.contextGenerators {
+		var err error
+		ctx, err = g.BuildContext(ctx, r)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return ctx, nil
 }

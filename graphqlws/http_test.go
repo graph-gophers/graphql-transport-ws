@@ -2,6 +2,7 @@ package graphqlws
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -18,12 +19,20 @@ func TestNewHandlerFunctionalOptions(t *testing.T) {
 
 	contextGeneratorOption := WithContextGenerator(contextBuilderFunc())
 
+	contextBuilderErrorFunc := func() ContextGeneratorFunc {
+		return func(ctx context.Context, r *http.Request) (context.Context, error) {
+			return nil, errors.New("unexpected error generating context")
+		}
+	}
+
+	contextGeneratorErrorOption := WithContextGenerator(contextBuilderErrorFunc())
+
 	type args struct {
 		Options []Option
 	}
 	type want struct {
 		Context context.Context
-		Error error
+		Error string
 	}
 
 	testTable := map[string]struct {
@@ -31,12 +40,15 @@ func TestNewHandlerFunctionalOptions(t *testing.T) {
 		Want want
 	}{
 		"No_options": {
-			Args: args{},
-			Want: want{Context: context.Background(), Error: nil},
+			Want: want{Context: context.Background()},
 		},
 		"With_context_generators": {
 			Args: args{Options: []Option{contextGeneratorOption}},
-			Want: want{Context: context.WithValue(context.Background(), "testKey", "test value"), Error: nil},
+			Want: want{Context: context.WithValue(context.Background(), "testKey", "test value")},
+		},
+		"With_context_generator_error": {
+			Args: args{Options: []Option{contextGeneratorErrorOption}},
+			Want: want{Context: nil, Error: "unexpected error generating context"},
 		},
 	}
 
@@ -52,8 +64,8 @@ func TestNewHandlerFunctionalOptions(t *testing.T) {
 
 			ctx, err := processOptions(req, tt.Args.Options...)
 
-			if tt.Want.Error != nil {
-				assert.EqualError(t, tt.Want.Error, err.Error(), "Expected error")
+			if tt.Want.Error != "" {
+				assert.EqualError(t, err, tt.Want.Error, "Expected error")
 				return
 			}
 			assert.Equal(t, tt.Want.Context, ctx, "New context generated")

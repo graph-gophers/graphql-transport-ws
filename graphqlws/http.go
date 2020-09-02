@@ -70,13 +70,12 @@ func applyOptions(opts ...Option) *options {
 
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
 func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler, options ...Option) http.HandlerFunc {
+	o := applyOptions(options...)
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		for _, subprotocol := range websocket.Subprotocols(r) {
 			if subprotocol == "graphql-ws" {
-				ctx, err := processOptions(r, options...)
-				if err != nil {
-					return
-				}
+				ctx, err := buildContext(r, o.contextGenerators)
 
 				ws, err := upgrader.Upgrade(w, r, nil)
 				if err != nil {
@@ -98,15 +97,9 @@ func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler, opt
 	}
 }
 
-func processOptions(r *http.Request, options ...Option) (context.Context, error) {
+func buildContext(r *http.Request, generators []ContextGenerator) (context.Context, error) {
 	ctx := context.Background()
-	if options == nil {
-		return ctx, nil
-	}
-
-	o := applyOptions(options...)
-
-	for _, g := range o.contextGenerators {
+	for _, g := range generators {
 		var err error
 		ctx, err = g.BuildContext(ctx, r)
 		if err != nil {

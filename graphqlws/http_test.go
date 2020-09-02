@@ -10,14 +10,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewHandlerFunctionalOptions(t *testing.T) {
+func TestContextGenerators(t *testing.T) {
 	contextBuilderFunc := func() ContextGeneratorFunc {
 		return func(ctx context.Context, r *http.Request) (context.Context, error) {
 			return context.WithValue(ctx, "testKey", "test value"), nil
 		}
 	}
-
-	contextGeneratorOption := WithContextGenerator(contextBuilderFunc())
 
 	contextBuilderErrorFunc := func() ContextGeneratorFunc {
 		return func(ctx context.Context, r *http.Request) (context.Context, error) {
@@ -25,10 +23,8 @@ func TestNewHandlerFunctionalOptions(t *testing.T) {
 		}
 	}
 
-	contextGeneratorErrorOption := WithContextGenerator(contextBuilderErrorFunc())
-
 	type args struct {
-		Options []Option
+		Generator []ContextGenerator
 	}
 	type want struct {
 		Context context.Context
@@ -43,11 +39,11 @@ func TestNewHandlerFunctionalOptions(t *testing.T) {
 			Want: want{Context: context.Background()},
 		},
 		"With_context_generators": {
-			Args: args{Options: []Option{contextGeneratorOption}},
+			Args: args{Generator: []ContextGenerator{contextBuilderFunc()}},
 			Want: want{Context: context.WithValue(context.Background(), "testKey", "test value")},
 		},
 		"With_context_generator_error": {
-			Args: args{Options: []Option{contextGeneratorErrorOption}},
+			Args: args{Generator: []ContextGenerator{contextBuilderErrorFunc()}},
 			Want: want{Context: nil, Error: "unexpected error generating context"},
 		},
 	}
@@ -62,7 +58,7 @@ func TestNewHandlerFunctionalOptions(t *testing.T) {
 				return
 			}
 
-			ctx, err := processOptions(req, tt.Args.Options...)
+			ctx, err := buildContext(req, tt.Args.Generator)
 
 			if tt.Want.Error != "" {
 				assert.EqualError(t, err, tt.Want.Error, "Expected error")

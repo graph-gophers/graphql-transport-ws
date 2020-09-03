@@ -54,9 +54,7 @@ func TestContextGenerators(t *testing.T) {
 			t.Parallel()
 
 			req, err := http.NewRequest("GET", "/graphql", nil)
-			if err != nil {
-				return
-			}
+			require.NoError(t, err, "Failed to create request")
 
 			ctx, err := buildContext(req, tt.Args.Generator)
 

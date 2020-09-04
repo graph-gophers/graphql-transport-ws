@@ -9,14 +9,25 @@ import (
 	"github.com/graph-gophers/graphql-transport-ws/graphqlws/internal/connection"
 )
 
-const protocolGraphQLWS = "graphql-ws"
+// ProtocolGraphQLWS is websocket subprotocol ID for GraphQL over WebSocket
+// see https://github.com/apollographql/subscriptions-transport-ws
+const ProtocolGraphQLWS = "graphql-ws"
 
-var upgrader = websocket.Upgrader{
+var defaultUpgrader = websocket.Upgrader{
 	CheckOrigin:  func(r *http.Request) bool { return true },
-	Subprotocols: []string{protocolGraphQLWS},
+	Subprotocols: []string{ProtocolGraphQLWS},
 }
 
-// The ContextGenerator takes a context and the http request it can be used
+type handler struct {
+	Upgrader websocket.Upgrader
+}
+
+// NewHandler creates new GraphQL over websocket Handler with default websocket Upgrader.
+func NewHandler() handler {
+	return handler{Upgrader: defaultUpgrader}
+}
+
+// The ContextGeneratorFunc takes a context and the http request it can be used
 // to take values out of the request context and assign them to a new context
 // that will be supplied to the websocket connection go routine and be accessible
 // in the resolver.
@@ -70,19 +81,25 @@ func applyOptions(opts ...Option) *options {
 
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
 func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler, options ...Option) http.HandlerFunc {
+	handler := NewHandler()
+	return handler.NewHandlerFunc(svc, httpHandler, options...)
+}
+
+// NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
+func (h *handler) NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler, options ...Option) http.HandlerFunc {
 	o := applyOptions(options...)
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		for _, subprotocol := range websocket.Subprotocols(r) {
-			if subprotocol == "graphql-ws" {
+			if subprotocol == ProtocolGraphQLWS {
 				ctx, err := buildContext(r, o.contextGenerators)
 
-				ws, err := upgrader.Upgrade(w, r, nil)
+				ws, err := h.Upgrader.Upgrade(w, r, nil)
 				if err != nil {
 					return
 				}
 
-				if ws.Subprotocol() != protocolGraphQLWS {
+				if ws.Subprotocol() != ProtocolGraphQLWS {
 					ws.Close()
 					return
 				}

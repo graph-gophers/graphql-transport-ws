@@ -185,7 +185,7 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 			}
 
 			opCtx, cancel := context.WithCancel(ctx)
-			opCtx = context.WithValue(ctx, "Header", header)
+			opCtx = context.WithValue(opCtx, "Header", header)
 
 			// TODO: timeout this call, to guard against poor clients
 			c, err := conn.service.Subscribe(opCtx, osp.Query, osp.OperationName, osp.Variables)

@@ -2,7 +2,6 @@ package graphqlws
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/gorilla/websocket"
 
@@ -12,8 +11,9 @@ import (
 const protocolGraphQLWS = "graphql-ws"
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin:  func(r *http.Request) bool { return true },
-	Subprotocols: []string{protocolGraphQLWS},
+	CheckOrigin:       func(r *http.Request) bool { return true },
+	Subprotocols:      []string{protocolGraphQLWS},
+	EnableCompression: true,
 }
 
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
@@ -21,9 +21,6 @@ func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler) htt
 	return func(w http.ResponseWriter, r *http.Request) {
 		for _, subprotocol := range websocket.Subprotocols(r) {
 			if subprotocol == "graphql-ws" {
-				if strings.Contains(r.Header.Get("Sec-WebSocket-Extensions"), "permessage-deflate") {
-					upgrader.EnableCompression = true
-				}
 				ws, err := upgrader.Upgrade(w, r, nil)
 				if err != nil {
 					return

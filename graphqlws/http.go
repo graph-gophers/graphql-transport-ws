@@ -21,7 +21,7 @@ func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler) htt
 	return func(w http.ResponseWriter, r *http.Request) {
 		for _, subprotocol := range websocket.Subprotocols(r) {
 			if subprotocol == "graphql-ws" {
-				if strings.Contains(r.Header.Get("Accept-Encoding"), "deflate") {
+				if strings.Contains(r.Header.Get("Sec-WebSocket-Extensions"), "permessage-deflate") {
 					upgrader.EnableCompression = true
 				}
 				ws, err := upgrader.Upgrade(w, r, nil)

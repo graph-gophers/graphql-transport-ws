@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -61,6 +62,37 @@ type connection struct {
 	ws           wsConnection
 }
 
+type operationMap struct {
+	ops map[string]func()
+	mtx *sync.RWMutex
+}
+
+func newOperationMap() operationMap {
+	return operationMap{
+		ops: make(map[string]func()),
+		mtx: &sync.RWMutex{},
+	}
+}
+
+func (o *operationMap) add(name string, done func()) {
+	o.mtx.Lock()
+	o.ops[name] = done
+	o.mtx.Unlock()
+}
+
+func (o *operationMap) get(name string) (func(), bool) {
+	o.mtx.RLock()
+	f, ok := o.ops[name]
+	o.mtx.RUnlock()
+	return f, ok
+}
+
+func (o *operationMap) delete(name string) {
+	o.mtx.Lock()
+	delete(o.ops, name)
+	o.mtx.Unlock()
+}
+
 // ReadLimit limits the maximum size of incoming messages
 func ReadLimit(limit int64) func(conn *connection) {
 	return func(conn *connection) {
@@ -77,7 +109,7 @@ func WriteTimeout(d time.Duration) func(conn *connection) {
 
 // Connect implements the apollographql subscriptions-transport-ws protocol@v0.9.4
 // https://github.com/apollographql/subscriptions-transport-ws/blob/v0.9.4/PROTOCOL.md
-func Connect(ws wsConnection, service GraphQLService, options ...func(conn *connection)) func() {
+func Connect(ctx context.Context, ws wsConnection, service GraphQLService, options ...func(conn *connection)) func() {
 	conn := &connection{
 		service: service,
 		ws:      ws,
@@ -92,7 +124,7 @@ func Connect(ws wsConnection, service GraphQLService, options ...func(conn *conn
 		opt(conn)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	conn.cancel = cancel
 	conn.readLoop(ctx, conn.writeLoop(ctx))
 
@@ -148,8 +180,10 @@ func (conn *connection) close() {
 
 func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 	defer conn.close()
-	opDone := map[string]func(){}
+
+  opDone := newOperationMap()
 	var header json.RawMessage
+
 	for {
 
 		var msg operationMessage
@@ -196,7 +230,7 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 				continue
 			}
 
-			opDone[msg.ID] = cancel
+			opDone.add(msg.ID, cancel)
 
 			go func() {
 				defer cancel()
@@ -221,9 +255,9 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 			}()
 
 		case typeStop:
-			onDone, ok := opDone[msg.ID]
+			onDone, ok := opDone.get(msg.ID)
 			if ok {
-				delete(opDone, msg.ID)
+				opDone.delete(msg.ID)
 				onDone()
 			}
 			send(msg.ID, typeComplete, nil)

@@ -11,8 +11,9 @@ import (
 const protocolGraphQLWS = "graphql-ws"
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin:  func(r *http.Request) bool { return true },
-	Subprotocols: []string{protocolGraphQLWS},
+	CheckOrigin:       func(r *http.Request) bool { return true },
+	Subprotocols:      []string{protocolGraphQLWS},
+	EnableCompression: true,
 }
 
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets

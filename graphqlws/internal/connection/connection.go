@@ -181,7 +181,7 @@ func (conn *connection) close() {
 func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 	defer conn.close()
 
-  opDone := newOperationMap()
+	opDone := newOperationMap()
 	var header json.RawMessage
 
 	for {

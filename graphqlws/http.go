@@ -5,15 +5,14 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/dgraph-io/graphql-transport-ws/graphqlws/internal/connection"
+	"github.com/graph-gophers/graphql-transport-ws/graphqlws/internal/connection"
 )
 
 const protocolGraphQLWS = "graphql-ws"
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin:       func(r *http.Request) bool { return true },
-	Subprotocols:      []string{protocolGraphQLWS},
-	EnableCompression: true,
+	CheckOrigin:  func(r *http.Request) bool { return true },
+	Subprotocols: []string{protocolGraphQLWS},
 }
 
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets

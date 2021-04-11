@@ -71,6 +71,78 @@ func TestConnect(t *testing.T) {
 			},
 		},
 		{
+			name: "start_empty_id_error",
+			svc:  newGQLService(`{"data":{},"errors":null}`),
+			messages: []message{
+				{
+					intention: clientSends,
+					operationMessage: `{
+						"type": "start",
+						"id": "",
+						"payload": {}
+					}`,
+				},
+				{
+					intention: expectation,
+					operationMessage: `{
+						"type": "connection_error",
+						"payload": {
+							"message": "missing ID for start operation"
+						}
+					}`,
+				},
+			},
+		},
+		{
+			name: "start_duplicate_id_error",
+			svc:  newGQLService(`{"data":{},"errors":null}`),
+			messages: []message{
+				{
+					intention: clientSends,
+					operationMessage: `{
+						"type": "start",
+						"id": "a-id",
+						"payload": {}
+					}`,
+				},
+				{
+					intention: expectation,
+					operationMessage: `{
+						"type": "data",
+						"id": "a-id",
+						"payload": {
+							"data": {},
+							"errors": null
+						}
+					}`,
+				},
+				{
+					intention: expectation,
+					operationMessage: `{
+						"type":"complete",
+						"id": "a-id"
+					}`,
+				},
+				{
+					intention: clientSends,
+					operationMessage: `{
+						"type": "start",
+						"id": "a-id",
+						"payload": {}
+					}`,
+				},
+				{
+					intention: expectation,
+					operationMessage: `{
+						"type": "connection_error",
+						"payload": {
+							"message": "duplicate message ID for start operation"
+						}
+					}`,
+				},
+			},
+		},
+		{
 			name: "start_ok",
 			svc:  newGQLService(`{"data":{},"errors":null}`),
 			messages: []message{
@@ -168,11 +240,63 @@ func TestConnect(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "start_query_delay",
+			svc:  newGQLService(`{"data":{},"errors":null}`).addDelay(500 * time.Millisecond),
+			messages: []message{
+				{
+					intention: clientSends,
+					operationMessage: `{
+						"id": "d-id",
+						"type": "start",
+						"payload": {}
+					}`,
+				},
+				{
+					intention: expectation,
+					operationMessage: `{
+						"id": "d-id",
+						"type": "data",
+						"payload": {
+							"data": {},
+							"errors": null
+						}
+					}`,
+				},
+			},
+		},
+		{
+			name: "start_query_timeout",
+			svc: &gqlService{
+				delay: 5 * time.Second,
+			},
+			messages: []message{
+				{
+					intention: clientSends,
+					operationMessage: `{
+						"id": "t-id",
+						"type": "start",
+						"payload": {}
+					}`,
+				},
+				{
+					intention: expectation,
+					operationMessage: `{
+						"id": "t-id",
+						"type": "error",
+						"payload": {
+							"message": "subscription connect timeout"
+						}
+					}`,
+				},
+			},
+		},
 	}
 	for _, tt := range testTable {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			ws := newConnection()
-
 			go connection.Connect(context.Background(), ws, tt.svc)
 			ws.test(t, tt.messages)
 		})
@@ -182,6 +306,7 @@ func TestConnect(t *testing.T) {
 type gqlService struct {
 	payloads <-chan interface{}
 	err      error
+	delay    time.Duration
 }
 
 func newGQLService(pp ...string) *gqlService {
@@ -194,8 +319,21 @@ func newGQLService(pp ...string) *gqlService {
 	return &gqlService{payloads: c}
 }
 
+func (g *gqlService) addDelay(d time.Duration) *gqlService {
+	g.delay = d
+	return g
+}
+
 func (h *gqlService) Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]interface{}) (payloads <-chan interface{}, err error) {
+	if h.delay > time.Duration(0) {
+		time.Sleep(h.delay)
+	}
 	return h.payloads, h.err
+}
+
+type wsConnection struct {
+	in  chan json.RawMessage
+	out chan json.RawMessage
 }
 
 func newConnection() *wsConnection {
@@ -203,11 +341,6 @@ func newConnection() *wsConnection {
 		in:  make(chan json.RawMessage),
 		out: make(chan json.RawMessage),
 	}
-}
-
-type wsConnection struct {
-	in  chan json.RawMessage
-	out chan json.RawMessage
 }
 
 func (ws *wsConnection) test(t *testing.T, messages []message) {

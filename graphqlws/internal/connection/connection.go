@@ -178,6 +178,64 @@ func (conn *connection) close() {
 	conn.ws.Close()
 }
 
+func (conn *connection) addSubscription(ctx context.Context,
+	cancel context.CancelFunc,
+	ops operationMap,
+	message operationMessage,
+	send sendFunc) {
+	defer cancel()
+	var c <-chan interface{}
+	var err error
+	var mp startMessagePayload
+	if err := json.Unmarshal(message.Payload, &mp); err != nil {
+		ep := errPayload(fmt.Errorf("invalid payload for type: %s", message.Type))
+		send(message.ID, typeConnectionError, ep)
+		return
+	}
+
+	var timeout = time.NewTimer(conn.writeTimeout)
+	var bail = make(chan bool)
+
+	go func(t <-chan time.Time, kill chan bool) {
+		<-t
+		ops.delete(message.ID)
+		ep := errPayload(errors.New("subscription connect timeout"))
+		send(message.ID, typeError, ep)
+		send(message.ID, typeComplete, nil)
+		kill <- true
+	}(timeout.C, bail)
+
+	c, err = conn.service.Subscribe(ctx, mp.Query, mp.OperationName, mp.Variables)
+	if err != nil {
+		ops.delete(message.ID)
+		send(message.ID, typeError, errPayload(err))
+		send(message.ID, typeComplete, nil)
+		return
+	}
+	timeout.Stop()
+
+	for {
+		select {
+		case <-bail:
+			return
+		case <-ctx.Done():
+			return
+		case payload, more := <-c:
+			if !more {
+				send(message.ID, typeComplete, nil)
+				return
+			}
+
+			jsonPayload, err := json.Marshal(payload)
+			if err != nil {
+				send(message.ID, typeError, errPayload(err))
+				continue
+			}
+			send(message.ID, typeData, jsonPayload)
+		}
+	}
+}
+
 func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 	defer conn.close()
 
@@ -204,55 +262,23 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 			header = msg.Payload
 
 		case typeStart:
-			// TODO: check an operation with the same ID hasn't been started already
 			if msg.ID == "" {
 				ep := errPayload(errors.New("missing ID for start operation"))
 				send("", typeConnectionError, ep)
 				continue
 			}
 
-			var osp startMessagePayload
-			if err := json.Unmarshal(msg.Payload, &osp); err != nil {
-				ep := errPayload(fmt.Errorf("invalid payload for type: %s", msg.Type))
-				send(msg.ID, typeConnectionError, ep)
+			if _, exists := opDone.get(msg.ID); exists {
+				ep := errPayload(errors.New("duplicate message ID for start operation"))
+				send("", typeConnectionError, ep)
 				continue
 			}
 
-			opCtx, cancel := context.WithCancel(ctx)
+			opCtx, opCancel := context.WithCancel(ctx)
 			opCtx = context.WithValue(opCtx, "Header", header)
+			opDone.add(msg.ID, opCancel)
 
-			// TODO: timeout this call, to guard against poor clients
-			c, err := conn.service.Subscribe(opCtx, osp.Query, osp.OperationName, osp.Variables)
-			if err != nil {
-				cancel()
-				send(msg.ID, typeError, errPayload(err))
-				send(msg.ID, typeComplete, nil)
-				continue
-			}
-
-			opDone.add(msg.ID, cancel)
-
-			go func() {
-				defer cancel()
-				for {
-					select {
-					case <-opCtx.Done():
-						return
-					case payload, more := <-c:
-						if !more {
-							send(msg.ID, typeComplete, nil)
-							return
-						}
-
-						jsonPayload, err := json.Marshal(payload)
-						if err != nil {
-							send(msg.ID, typeError, errPayload(err))
-							continue
-						}
-						send(msg.ID, typeData, jsonPayload)
-					}
-				}
-			}()
+			go conn.addSubscription(opCtx, opCancel, opDone, msg, send)
 
 		case typeStop:
 			onDone, ok := opDone.get(msg.ID)

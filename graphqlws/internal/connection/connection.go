@@ -194,15 +194,22 @@ func (conn *connection) addSubscription(ctx context.Context,
 	}
 
 	var timeout = time.NewTimer(conn.writeTimeout)
+	var setupComplete = make(chan bool)
 	var bail = make(chan bool)
 
 	go func(t <-chan time.Time, kill chan bool) {
-		<-t
-		ops.delete(message.ID)
-		ep := errPayload(errors.New("subscription connect timeout"))
-		send(message.ID, typeError, ep)
-		send(message.ID, typeComplete, nil)
-		kill <- true
+		select {
+		case <-t:
+			// setup timed out
+			ops.delete(message.ID)
+			ep := errPayload(errors.New("subscription connect timeout"))
+			send(message.ID, typeError, ep)
+			send(message.ID, typeComplete, nil)
+			kill <- true
+		case <-setupComplete:
+			// setup completed, shut down goroutine
+			return
+		}
 	}(timeout.C, bail)
 
 	c, err = conn.service.Subscribe(ctx, mp.Query, mp.OperationName, mp.Variables)
@@ -210,9 +217,12 @@ func (conn *connection) addSubscription(ctx context.Context,
 		ops.delete(message.ID)
 		send(message.ID, typeError, errPayload(err))
 		send(message.ID, typeComplete, nil)
+		setupComplete <- true
 		return
 	}
+
 	timeout.Stop()
+	setupComplete <- true
 
 	for {
 		select {

@@ -9,7 +9,7 @@ A Go package that leverages WebSockets to transport GraphQL subscriptions, queri
 
 To use this library with [github.com/graph-gophers/graphql-go](https://github.com/graph-gophers/graphql-go) you can wrap the `relay` handler it provides the following way:
 
-```
+```go
 package main
 
 import (

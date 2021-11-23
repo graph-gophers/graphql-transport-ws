@@ -97,6 +97,11 @@ func (h *handler) NewHandlerFunc(svc connection.GraphQLService, httpHandler http
 			}
 
 			ctx, err := buildContext(r, o.contextGenerators)
+			if err != nil {
+				w.Header().Set("X-WebSocket-Upgrade-Failure", err.Error())
+				return
+			}
+
 			ws, err := h.Upgrader.Upgrade(w, r, nil)
 			if err != nil {
 				w.Header().Set("X-WebSocket-Upgrade-Failure", err.Error())

@@ -93,15 +93,17 @@ func (o *operationMap) delete(name string) {
 	o.mtx.Unlock()
 }
 
+type Option func(conn *connection)
+
 // ReadLimit limits the maximum size of incoming messages
-func ReadLimit(limit int64) func(conn *connection) {
+func ReadLimit(limit int64) Option {
 	return func(conn *connection) {
 		conn.ws.SetReadLimit(limit)
 	}
 }
 
 // WriteTimeout sets a timeout for outgoing messages
-func WriteTimeout(d time.Duration) func(conn *connection) {
+func WriteTimeout(d time.Duration) Option {
 	return func(conn *connection) {
 		conn.writeTimeout = d
 	}
@@ -109,13 +111,13 @@ func WriteTimeout(d time.Duration) func(conn *connection) {
 
 // Connect implements the apollographql subscriptions-transport-ws protocol@v0.9.4
 // https://github.com/apollographql/subscriptions-transport-ws/blob/v0.9.4/PROTOCOL.md
-func Connect(ctx context.Context, ws wsConnection, service GraphQLService, options ...func(conn *connection)) func() {
+func Connect(ctx context.Context, ws wsConnection, service GraphQLService, options ...Option) func() {
 	conn := &connection{
 		service: service,
 		ws:      ws,
 	}
 
-	defaultOpts := []func(conn *connection){
+	defaultOpts := []Option{
 		ReadLimit(4096),
 		WriteTimeout(time.Second),
 	}
@@ -202,7 +204,7 @@ func (conn *connection) addSubscription(ctx context.Context,
 		case <-t:
 			// setup timed out
 			ops.delete(message.ID)
-			ep := errPayload(errors.New("subscription connect timeout"))
+			ep := errPayload(fmt.Errorf("server subscription connect timeout after %s", conn.writeTimeout))
 			send(message.ID, typeError, ep)
 			send(message.ID, typeComplete, nil)
 			kill <- true

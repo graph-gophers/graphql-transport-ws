@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/graph-gophers/graphql-transport-ws/graphqlws/internal/transport"
 
 	"github.com/graph-gophers/graphql-transport-ws/graphqlws/internal/connection"
 	"github.com/graph-gophers/graphql-transport-ws/graphqlws/internal/gql"
@@ -68,12 +69,29 @@ type options struct {
 
 func (o *options) connectionOptions() []connection.Option {
 	var connOptions []connection.Option
+
 	if o.hasReadLimit {
 		connOptions = append(connOptions, connection.ReadLimit(o.readLimit))
 	}
+
 	if o.hasWriteTimeout {
 		connOptions = append(connOptions, connection.WriteTimeout(o.writeTimeout))
 	}
+
+	return connOptions
+}
+
+func (o *options) transportOptions() []transport.Option {
+	var connOptions []transport.Option
+
+	if o.hasReadLimit {
+		connOptions = append(connOptions, transport.ReadLimit(o.readLimit))
+	}
+
+	if o.hasWriteTimeout {
+		connOptions = append(connOptions, transport.WriteTimeout(o.writeTimeout))
+	}
+
 	return connOptions
 }
 
@@ -156,9 +174,7 @@ func (h *handler) NewHandlerFunc(svc gql.GraphQLService, httpHandler http.Handle
 			go connection.Connect(ctx, ws, svc, o.connectionOptions()...)
 
 		case ProtocolGraphQLTransportWS:
-			// TODO: support graphql-transport-ws subprotocol
-			w.Header().Set("X-WebSocket-Upgrade-Failure", "unsupported subprotocol")
-			ws.Close()
+			go transport.Connect(ctx, ws, svc, o.transportOptions()...)
 
 		default:
 			w.Header().Set("X-WebSocket-Upgrade-Failure", "unsupported subprotocol")

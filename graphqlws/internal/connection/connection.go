@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/graph-gophers/graphql-transport-ws/graphqlws/internal/gql"
 )
 
 type operationMessageType string
@@ -50,14 +52,9 @@ type startMessagePayload struct {
 
 type initMessagePayload struct{}
 
-// GraphQLService interface
-type GraphQLService interface {
-	Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]interface{}) (payloads <-chan interface{}, err error)
-}
-
 type connection struct {
 	cancel       func()
-	service      GraphQLService
+	service      gql.GraphQLService
 	writeTimeout time.Duration
 	ws           wsConnection
 }
@@ -111,7 +108,7 @@ func WriteTimeout(d time.Duration) Option {
 
 // Connect implements the apollographql subscriptions-transport-ws protocol@v0.9.4
 // https://github.com/apollographql/subscriptions-transport-ws/blob/v0.9.4/PROTOCOL.md
-func Connect(ctx context.Context, ws wsConnection, service GraphQLService, options ...Option) func() {
+func Connect(ctx context.Context, ws wsConnection, service gql.GraphQLService, options ...Option) func() {
 	conn := &connection{
 		service: service,
 		ws:      ws,

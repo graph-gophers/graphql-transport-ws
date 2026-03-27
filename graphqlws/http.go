@@ -8,6 +8,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/graph-gophers/graphql-transport-ws/graphqlws/internal/connection"
+	"github.com/graph-gophers/graphql-transport-ws/graphqlws/internal/gql"
 )
 
 const (
@@ -117,13 +118,13 @@ func applyOptions(opts ...Option) *options {
 }
 
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
-func NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler, options ...Option) http.HandlerFunc {
+func NewHandlerFunc(svc gql.GraphQLService, httpHandler http.Handler, options ...Option) http.HandlerFunc {
 	handler := NewHandler()
 	return handler.NewHandlerFunc(svc, httpHandler, options...)
 }
 
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
-func (h *handler) NewHandlerFunc(svc connection.GraphQLService, httpHandler http.Handler, options ...Option) http.HandlerFunc {
+func (h *handler) NewHandlerFunc(svc gql.GraphQLService, httpHandler http.Handler, options ...Option) http.HandlerFunc {
 	o := applyOptions(options...)
 
 	return func(w http.ResponseWriter, r *http.Request) {

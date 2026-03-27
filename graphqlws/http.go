@@ -68,31 +68,31 @@ type options struct {
 }
 
 func (o *options) connectionOptions() []connection.Option {
-	var connOptions []connection.Option
+	var opts []connection.Option
 
 	if o.hasReadLimit {
-		connOptions = append(connOptions, connection.ReadLimit(o.readLimit))
+		opts = append(opts, connection.ReadLimit(o.readLimit))
 	}
 
 	if o.hasWriteTimeout {
-		connOptions = append(connOptions, connection.WriteTimeout(o.writeTimeout))
+		opts = append(opts, connection.WriteTimeout(o.writeTimeout))
 	}
 
-	return connOptions
+	return opts
 }
 
 func (o *options) transportOptions() []transport.Option {
-	var connOptions []transport.Option
+	var opts []transport.Option
 
 	if o.hasReadLimit {
-		connOptions = append(connOptions, transport.ReadLimit(o.readLimit))
+		opts = append(opts, transport.ReadLimit(o.readLimit))
 	}
 
 	if o.hasWriteTimeout {
-		connOptions = append(connOptions, transport.WriteTimeout(o.writeTimeout))
+		opts = append(opts, transport.WriteTimeout(o.writeTimeout))
 	}
 
-	return connOptions
+	return opts
 }
 
 type optionFunc func(*options)

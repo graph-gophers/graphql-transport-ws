@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -28,6 +29,8 @@ type message struct {
 }
 
 func TestConnect(t *testing.T) {
+	defaultWriteTimeout := time.Second
+
 	testTable := []struct {
 		name     string
 		svc      *gqlService
@@ -281,13 +284,13 @@ func TestConnect(t *testing.T) {
 				},
 				{
 					intention: expectation,
-					operationMessage: `{
+					operationMessage: fmt.Sprintf(`{
 						"id": "t-id",
 						"type": "error",
 						"payload": {
-							"message": "subscription connect timeout"
+							"message": "server subscription connect timeout after %s"
 						}
-					}`,
+					}`, defaultWriteTimeout),
 				},
 			},
 		},

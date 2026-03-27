@@ -2,6 +2,7 @@ package graphqlws
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -93,21 +94,36 @@ func TestNewHandlerFunc(t *testing.T) {
 				},
 			},
 		},
-		"graphql-transport-ws protocol unsupported ": {
+		"graphql-transport-ws protocol ok ": {
 			args: Args{
 				isWebSocketTest: true,
 				subprotocols:    []string{ProtocolGraphQLTransportWS},
 			},
 			setup: func() testMocker {
-				return testMocker{handler: NewHandlerFunc(nil, nil)}
+				// The handler is now initialized with a mock service to handle subscriptions.
+				// For this test, we only care about the connection handshake,
+				// so a nil service would also work, but this is more realistic.
+				mockSvc := new(mockGraphQLService)
+				return testMocker{handler: NewHandlerFunc(mockSvc, nil)}
 			},
 			want: Want{
 				expectedSubprotocol: ProtocolGraphQLTransportWS,
 				assertion: func(t *testing.T, conn *websocket.Conn) {
-					var closeError *websocket.CloseError
+					initMsg := `{"type":"connection_init"}`
+					err := conn.WriteMessage(websocket.TextMessage, []byte(initMsg))
+					require.NoError(t, err, "Failed to send connection_init")
 
-					_, _, err := conn.ReadMessage()
-					assert.ErrorAs(t, err, &closeError, "Expected server to close connection for placeholder")
+					_, p, err := conn.ReadMessage()
+					require.NoError(t, err, "Failed to read message from server")
+
+					var msg struct {
+						Type string `json:"type"`
+					}
+					
+					err = json.Unmarshal(p, &msg)
+					require.NoError(t, err, "Failed to unmarshal server message")
+
+					assert.Equal(t, "connection_ack", msg.Type, "Expected connection_ack message")
 				},
 			},
 		},

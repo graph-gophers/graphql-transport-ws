@@ -1,7 +1,5 @@
 package graphqlws
 
-type contextKey string
-
 import (
 	"context"
 	"encoding/json"
@@ -17,6 +15,8 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
+
+type contextKey string
 
 type mockGraphQLService struct {
 	mock.Mock

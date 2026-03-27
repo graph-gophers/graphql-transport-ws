@@ -29,10 +29,10 @@ const (
 
 type wsConnection interface {
 	Close() error
-	ReadJSON(v interface{}) error
+	ReadJSON(v any) error
 	SetReadLimit(limit int64)
 	SetWriteDeadline(t time.Time) error
-	WriteJSON(v interface{}) error
+	WriteJSON(v any) error
 }
 
 type sendFunc func(id string, omType operationMessageType, payload json.RawMessage)
@@ -45,9 +45,9 @@ type operationMessage struct {
 }
 
 type startMessagePayload struct {
-	OperationName string                 `json:"operationName"`
-	Query         string                 `json:"query"`
-	Variables     map[string]interface{} `json:"variables"`
+	OperationName string         `json:"operationName"`
+	Query         string         `json:"query"`
+	Variables     map[string]any `json:"variables"`
 }
 
 type initMessagePayload struct{}
@@ -183,7 +183,7 @@ func (conn *connection) addSubscription(ctx context.Context,
 	message operationMessage,
 	send sendFunc) {
 	defer cancel()
-	var c <-chan interface{}
+	var c <-chan any
 	var err error
 	var mp startMessagePayload
 	if err := json.Unmarshal(message.Payload, &mp); err != nil {

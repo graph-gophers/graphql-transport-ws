@@ -20,9 +20,9 @@ type mockGraphQLService struct {
 	mock.Mock
 }
 
-func (s *mockGraphQLService) Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]interface{}) (<-chan interface{}, error) {
+func (s *mockGraphQLService) Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error) {
 	args := s.Called(ctx, document, operationName, variableValues)
-	return args.Get(0).(<-chan interface{}), args.Error(1)
+	return args.Get(0).(<-chan any), args.Error(1)
 }
 
 type mockHTTPHandler struct {
@@ -65,10 +65,10 @@ func TestNewHandlerFunc(t *testing.T) {
 				subprotocols:    []string{ProtocolGraphQLWS},
 			},
 			mockExpectations: func(m testMocker) {
-				c := make(chan interface{})
+				c := make(chan any)
 				close(c)
 
-				m.mockSvc.On("Subscribe", mock.AnythingOfType("*context.valueCtx"), "subscription{}", "", (map[string]interface{})(nil)).Return((<-chan interface{})(c), nil).Run(func(args mock.Arguments) {
+				m.mockSvc.On("Subscribe", mock.AnythingOfType("*context.valueCtx"), "subscription{}", "", (map[string]any)(nil)).Return((<-chan any)(c), nil).Run(func(args mock.Arguments) {
 					m.done <- true
 				}).Once()
 			},
@@ -119,7 +119,7 @@ func TestNewHandlerFunc(t *testing.T) {
 					var msg struct {
 						Type string `json:"type"`
 					}
-					
+
 					err = json.Unmarshal(p, &msg)
 					require.NoError(t, err, "Failed to unmarshal server message")
 
@@ -167,7 +167,6 @@ func TestNewHandlerFunc(t *testing.T) {
 	}
 
 	for name, tt := range testTable {
-		tt := tt
 
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -270,7 +269,6 @@ func TestContextGenerators(t *testing.T) {
 	}
 
 	for name, tt := range testTable {
-		tt := tt
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 

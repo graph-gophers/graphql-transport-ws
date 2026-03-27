@@ -13,6 +13,8 @@ import (
 
 type operationMessageType string
 
+type contextKey string
+
 // https://github.com/apollographql/subscriptions-transport-ws/blob/a56491c6feacd96cab47b7a3df8c2cb1b6a96e36/src/message-types.ts
 const (
 	typeComplete            operationMessageType = "complete"
@@ -187,7 +189,7 @@ func (conn *connection) addSubscription(ctx context.Context,
 	var c <-chan any
 	var err error
 	var mp startMessagePayload
-	if err := json.Unmarshal(message.Payload, &mp); err != nil {
+	if err = json.Unmarshal(message.Payload, &mp); err != nil {
 		ep := errPayload(fmt.Errorf("invalid payload for type: %s", message.Type))
 		send(message.ID, typeConnectionError, ep)
 		return
@@ -285,7 +287,7 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 			}
 
 			opCtx, opCancel := context.WithCancel(ctx)
-			opCtx = context.WithValue(opCtx, "Header", header)
+			opCtx = context.WithValue(opCtx, contextKey("Header"), header)
 			opDone.add(msg.ID, opCancel)
 
 			go conn.addSubscription(opCtx, opCancel, opDone, msg, send)

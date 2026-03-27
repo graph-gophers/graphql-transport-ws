@@ -137,8 +137,8 @@ func applyOptions(opts ...Option) *options {
 
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
 func NewHandlerFunc(svc gql.GraphQLService, httpHandler http.Handler, options ...Option) http.HandlerFunc {
-	handler := NewHandler()
-	return handler.NewHandlerFunc(svc, httpHandler, options...)
+	h := NewHandler()
+	return h.NewHandlerFunc(svc, httpHandler, options...)
 }
 
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets

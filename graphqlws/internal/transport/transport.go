@@ -172,20 +172,6 @@ func (conn *connection) close() {
 	conn.cancel()
 }
 
-func (conn *connection) drainChannel(out chan *operationMessage) {
-	for {
-		select {
-		case msg := <-out:
-			conn.ws.SetWriteDeadline(time.Now().Add(conn.writeTimeout))
-			if err := conn.ws.WriteJSON(msg); err != nil {
-				return
-			}
-		default:
-			return
-		}
-	}
-}
-
 func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 	defer conn.close()
 

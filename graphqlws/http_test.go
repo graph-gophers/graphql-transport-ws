@@ -1,5 +1,7 @@
 package graphqlws
 
+type contextKey string
+
 import (
 	"context"
 	"encoding/json"
@@ -232,7 +234,7 @@ func TestNewHandlerFunc(t *testing.T) {
 func TestContextGenerators(t *testing.T) {
 	contextBuilderFunc := func() ContextGeneratorFunc {
 		return func(ctx context.Context, r *http.Request) (context.Context, error) {
-			return context.WithValue(ctx, "testKey", "test value"), nil
+			return context.WithValue(ctx, contextKey("testKey"), "test value"), nil
 		}
 	}
 
@@ -259,7 +261,7 @@ func TestContextGenerators(t *testing.T) {
 		},
 		"With_context_generators": {
 			Args: args{Generator: []ContextGenerator{contextBuilderFunc()}},
-			Want: want{Context: context.WithValue(context.Background(), "testKey", "test value")},
+			Want: want{Context: context.WithValue(context.Background(), contextKey("testKey"), "test value")},
 		},
 		"With_context_generator_error": {
 			Args: args{Generator: []ContextGenerator{contextBuilderErrorFunc()}},

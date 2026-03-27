@@ -6,41 +6,72 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/require"
 )
 
 type contextKey string
 
-type mockGraphQLService struct {
-	mock.Mock
+type subscribeCall struct {
+	ctx           context.Context
+	document      string
+	operationName string
+	variables     map[string]any
 }
 
-func (s *mockGraphQLService) Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error) {
-	args := s.Called(ctx, document, operationName, variableValues)
-	return args.Get(0).(<-chan any), args.Error(1)
+type fakeGraphQLService struct {
+	mu          sync.Mutex
+	calls       []subscribeCall
+	subscribeFn func(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error)
 }
 
-type mockHTTPHandler struct {
-	mock.Mock
+func (s *fakeGraphQLService) Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error) {
+	s.mu.Lock()
+	s.calls = append(s.calls, subscribeCall{ctx: ctx, document: document, operationName: operationName, variables: variableValues})
+	s.mu.Unlock()
+
+	if s.subscribeFn == nil {
+		c := make(chan any)
+		close(c)
+		return c, nil
+	}
+
+	return s.subscribeFn(ctx, document, operationName, variableValues)
 }
 
-func (h *mockHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	h.Called(w, r)
+func (s *fakeGraphQLService) getCalls() []subscribeCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	out := make([]subscribeCall, len(s.calls))
+	copy(out, s.calls)
+	return out
+}
+
+type fakeHTTPHandler struct {
+	calls chan *http.Request
+}
+
+func (h *fakeHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.calls != nil {
+		select {
+		case h.calls <- r:
+		default:
+		}
+	}
+
 	w.WriteHeader(http.StatusOK)
 }
 
 type testMocker struct {
 	handler  http.Handler
-	mockSvc  *mockGraphQLService
-	mockHTTP *mockHTTPHandler
-	done     chan bool
+	mockSvc  *fakeGraphQLService
+	mockHTTP *fakeHTTPHandler
 }
 
 func TestNewHandlerFunc(t *testing.T) {
@@ -56,43 +87,44 @@ func TestNewHandlerFunc(t *testing.T) {
 	}
 
 	testTable := map[string]struct {
-		args             Args
-		mockExpectations func(m testMocker)
-		setup            func() testMocker
-		want             Want
+		args  Args
+		setup func() testMocker
+		want  Want
 	}{
 		"legacy protocol ok": {
 			args: Args{
 				isWebSocketTest: true,
 				subprotocols:    []string{ProtocolGraphQLWS},
 			},
-			mockExpectations: func(m testMocker) {
-				c := make(chan any)
-				close(c)
-
-				m.mockSvc.On("Subscribe", mock.AnythingOfType("*context.valueCtx"), "subscription{}", "", (map[string]any)(nil)).Return((<-chan any)(c), nil).Run(func(args mock.Arguments) {
-					m.done <- true
-				}).Once()
-			},
 			setup: func() testMocker {
-				mockSvc := new(mockGraphQLService)
+				mockSvc := &fakeGraphQLService{}
+				mockSvc.subscribeFn = func(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error) {
+					c := make(chan any)
+					close(c)
+					return c, nil
+				}
 				return testMocker{
 					handler: NewHandlerFunc(mockSvc, nil),
 					mockSvc: mockSvc,
-					done:    make(chan bool, 1),
 				}
 			},
 			want: Want{
 				expectedSubprotocol: ProtocolGraphQLWS,
 				assertion: func(t *testing.T, conn *websocket.Conn) {
 					err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"connection_init"}`))
-					require.NoError(t, err)
+					if err != nil {
+						t.Fatalf("failed to write connection_init: %v", err)
+					}
 
 					err = conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"1","type":"start","payload":{"query":"subscription{}"}}`))
-					require.NoError(t, err)
+					if err != nil {
+						t.Fatalf("failed to write start message: %v", err)
+					}
 
 					_, _, err = conn.ReadMessage()
-					require.NoError(t, err)
+					if err != nil {
+						t.Fatalf("failed to read server message: %v", err)
+					}
 				},
 			},
 		},
@@ -102,10 +134,7 @@ func TestNewHandlerFunc(t *testing.T) {
 				subprotocols:    []string{ProtocolGraphQLTransportWS},
 			},
 			setup: func() testMocker {
-				// The handler is now initialized with a mock service to handle subscriptions.
-				// For this test, we only care about the connection handshake,
-				// so a nil service would also work, but this is more realistic.
-				mockSvc := new(mockGraphQLService)
+				mockSvc := &fakeGraphQLService{}
 				return testMocker{handler: NewHandlerFunc(mockSvc, nil)}
 			},
 			want: Want{
@@ -113,19 +142,27 @@ func TestNewHandlerFunc(t *testing.T) {
 				assertion: func(t *testing.T, conn *websocket.Conn) {
 					initMsg := `{"type":"connection_init"}`
 					err := conn.WriteMessage(websocket.TextMessage, []byte(initMsg))
-					require.NoError(t, err, "Failed to send connection_init")
+					if err != nil {
+						t.Fatalf("failed to send connection_init: %v", err)
+					}
 
 					_, p, err := conn.ReadMessage()
-					require.NoError(t, err, "Failed to read message from server")
+					if err != nil {
+						t.Fatalf("failed to read message from server: %v", err)
+					}
 
 					var msg struct {
 						Type string `json:"type"`
 					}
 
 					err = json.Unmarshal(p, &msg)
-					require.NoError(t, err, "Failed to unmarshal server message")
+					if err != nil {
+						t.Fatalf("failed to unmarshal server message: %v", err)
+					}
 
-					assert.Equal(t, "connection_ack", msg.Type, "Expected connection_ack message")
+					if msg.Type != "connection_ack" {
+						t.Fatalf("expected connection_ack message, got %q", msg.Type)
+					}
 				},
 			},
 		},
@@ -139,27 +176,26 @@ func TestNewHandlerFunc(t *testing.T) {
 			},
 			want: Want{
 				assertion: func(t *testing.T, conn *websocket.Conn) {
-					assert.Equal(t, "", conn.Subprotocol(), "Expected no subprotocol to be selected")
+					if conn.Subprotocol() != "" {
+						t.Fatalf("expected no subprotocol to be selected, got %q", conn.Subprotocol())
+					}
 
 					var closeError *websocket.CloseError
 
 					_, _, err := conn.ReadMessage()
-					assert.ErrorAs(t, err, &closeError, "Expected server to close connection for unsupported protocol")
+					if !errors.As(err, &closeError) {
+						t.Fatalf("expected server to close connection for unsupported protocol, got err=%v", err)
+					}
 				},
 			},
 		},
 		"HTTP fallback ok": {
-			mockExpectations: func(m testMocker) {
-				m.mockHTTP.On("ServeHTTP", mock.Anything, mock.MatchedBy(func(r *http.Request) bool { return r.Method == http.MethodGet })).Run(func(args mock.Arguments) {
-					m.done <- true
-				}).Once()
-			},
 			setup: func() testMocker {
-				mockHTTP := new(mockHTTPHandler)
+				calls := make(chan *http.Request, 1)
+				mockHTTP := &fakeHTTPHandler{calls: calls}
 				return testMocker{
 					handler:  NewHandlerFunc(nil, mockHTTP),
 					mockHTTP: mockHTTP,
-					done:     make(chan bool, 1),
 				}
 			},
 			want: Want{
@@ -173,24 +209,26 @@ func TestNewHandlerFunc(t *testing.T) {
 			t.Parallel()
 
 			mocker := tt.setup()
-			if tt.mockExpectations != nil {
-				tt.mockExpectations(mocker)
-			}
 
 			server := httptest.NewServer(mocker.handler)
 			defer server.Close()
 
 			if !tt.args.isWebSocketTest {
 				_, err := http.Get(server.URL)
-				require.NoError(t, err)
-
-				select {
-				case <-mocker.done:
-				case <-time.After(1 * time.Second):
-					t.Fatal("timed out waiting for ServeHTTP mock to be called")
+				if err != nil {
+					t.Fatalf("HTTP fallback request failed: %v", err)
 				}
 
-				mocker.mockHTTP.AssertExpectations(t)
+				if mocker.mockHTTP != nil && mocker.mockHTTP.calls != nil {
+					select {
+					case req := <-mocker.mockHTTP.calls:
+						if req.Method != http.MethodGet {
+							t.Fatalf("expected HTTP method GET, got %s", req.Method)
+						}
+					case <-time.After(1 * time.Second):
+						t.Fatal("timed out waiting for ServeHTTP to be called")
+					}
+				}
 				return
 			}
 
@@ -203,29 +241,33 @@ func TestNewHandlerFunc(t *testing.T) {
 				return
 			}
 
-			require.NoError(t, err)
+			if err != nil {
+				t.Fatalf("websocket dial failed: %v", err)
+			}
 			defer conn.Close()
 
-			assert.Equal(t, tt.want.expectedSubprotocol, conn.Subprotocol())
+			if conn.Subprotocol() != tt.want.expectedSubprotocol {
+				t.Fatalf("expected subprotocol %q, got %q", tt.want.expectedSubprotocol, conn.Subprotocol())
+			}
 
 			if tt.want.assertion != nil {
 				tt.want.assertion(t, conn)
 			}
 
-			if mocker.done != nil {
-				select {
-				case <-mocker.done:
-				case <-time.After(1 * time.Second):
-					t.Fatal("timed out waiting for mock expectation to be met")
+			if name == "legacy protocol ok" {
+				calls := mocker.mockSvc.getCalls()
+				if len(calls) != 1 {
+					t.Fatalf("expected exactly 1 subscribe call, got %d", len(calls))
 				}
-			}
-
-			if mocker.mockSvc != nil {
-				mocker.mockSvc.AssertExpectations(t)
-			}
-
-			if mocker.mockHTTP != nil {
-				mocker.mockHTTP.AssertExpectations(t)
+				if calls[0].document != "subscription{}" {
+					t.Fatalf("unexpected subscribe document: %q", calls[0].document)
+				}
+				if calls[0].operationName != "" {
+					t.Fatalf("unexpected subscribe operationName: %q", calls[0].operationName)
+				}
+				if calls[0].variables != nil {
+					t.Fatalf("expected nil variables, got %#v", calls[0].variables)
+				}
 			}
 		})
 	}
@@ -274,16 +316,24 @@ func TestContextGenerators(t *testing.T) {
 			t.Parallel()
 
 			req, err := http.NewRequest("GET", "/graphql", nil)
-			require.NoError(t, err, "Failed to create request")
+			if err != nil {
+				t.Fatalf("failed to create request: %v", err)
+			}
 
 			ctx, err := buildContext(req, tt.Args.Generator)
 
 			if tt.Want.Error != "" {
-				assert.EqualError(t, err, tt.Want.Error, "Expected error")
+				if err == nil || err.Error() != tt.Want.Error {
+					t.Fatalf("expected error %q, got %v", tt.Want.Error, err)
+				}
 				return
 			}
-			assert.Equal(t, tt.Want.Context, ctx, "New context generated")
-			require.NoError(t, err, "Error generating context")
+			if err != nil {
+				t.Fatalf("error generating context: %v", err)
+			}
+			if !reflect.DeepEqual(tt.Want.Context, ctx) {
+				t.Fatalf("unexpected context generated")
+			}
 		})
 	}
 }

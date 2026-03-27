@@ -4,29 +4,48 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
 	"sort"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/require"
 )
 
-type mockGraphQLService struct {
-	mock.Mock
+type subscribeCall struct {
+	ctx           context.Context
+	document      string
+	operationName string
+	variables     map[string]any
 }
 
-// Subscribe is a mock implementation of a GraphQL subscription operation.
-// It records the call with the provided context and GraphQL parameters,
-// then returns a pre-configured channel and error based on the test setup.
-func (s *mockGraphQLService) Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error) {
-	args := s.Called(ctx, document, operationName, variableValues)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
+type fakeGraphQLService struct {
+	mu          sync.Mutex
+	calls       []subscribeCall
+	subscribeFn func(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error)
+}
+
+func (s *fakeGraphQLService) Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error) {
+	s.mu.Lock()
+	s.calls = append(s.calls, subscribeCall{ctx: ctx, document: document, operationName: operationName, variables: variableValues})
+	s.mu.Unlock()
+
+	if s.subscribeFn == nil {
+		c := make(chan any)
+		close(c)
+		return c, nil
 	}
-	return args.Get(0).(<-chan any), args.Error(1)
+
+	return s.subscribeFn(ctx, document, operationName, variableValues)
+}
+
+func (s *fakeGraphQLService) getCalls() []subscribeCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	out := make([]subscribeCall, len(s.calls))
+	copy(out, s.calls)
+	return out
 }
 
 type mockConnection struct {
@@ -101,7 +120,7 @@ func (ws *mockConnection) Close() error {
 
 type mocker struct {
 	conn    *mockConnection
-	mockSvc *mockGraphQLService
+	mockSvc *fakeGraphQLService
 }
 
 func setupTest(t *testing.T) mocker {
@@ -109,7 +128,7 @@ func setupTest(t *testing.T) mocker {
 
 	return mocker{
 		conn:    newMockConnection(),
-		mockSvc: new(mockGraphQLService),
+		mockSvc: &fakeGraphQLService{},
 	}
 }
 
@@ -156,12 +175,18 @@ func TestOperationMap(t *testing.T) {
 
 				gotFn, gotOk := om.get(tt.args.key)
 
-				assert.Equal(t, tt.want.ok, gotOk, "Expected 'ok' to match")
+				if gotOk != tt.want.ok {
+					t.Fatalf("expected ok=%t, got %t", tt.want.ok, gotOk)
+				}
 
 				if tt.want.fn != nil {
-					assert.NotNil(t, gotFn, "Expected function to be non-nil")
+					if gotFn == nil {
+						t.Fatalf("expected function to be non-nil")
+					}
 				} else {
-					assert.Nil(t, gotFn, "Expected function to be nil")
+					if gotFn != nil {
+						t.Fatalf("expected function to be nil")
+					}
 				}
 			})
 		}
@@ -197,7 +222,9 @@ func TestOperationMap(t *testing.T) {
 
 				gotKeys := getMapKeys(om.ops)
 				wantKeys := getMapKeys(tt.want)
-				assert.ElementsMatch(t, wantKeys, gotKeys, "Map keys do not match after delete")
+				if !reflect.DeepEqual(wantKeys, gotKeys) {
+					t.Fatalf("map keys do not match after delete: want=%v got=%v", wantKeys, gotKeys)
+				}
 			})
 		}
 	})
@@ -216,20 +243,23 @@ func TestConnect(t *testing.T) {
 	}
 
 	testTable := map[string]struct {
-		setup            func(t *testing.T) mocker
-		mockExpectations func(h mocker)
-		args             Args
-		want             Want
+		setup        func(t *testing.T) mocker
+		setupService func(h mocker)
+		args         Args
+		want         Want
+		verifyCalls  func(t *testing.T, calls []subscribeCall)
 	}{
 		"Successful subscription": {
 			setup: setupTest,
-			mockExpectations: func(h mocker) {
+			setupService: func(h mocker) {
 				c := make(chan any, 1)
 				c <- json.RawMessage(`{"data":{"foo":"bar"}}`)
 
 				close(c)
 
-				h.mockSvc.On("Subscribe", mock.Anything, "sub { hello }", "MySub", mock.Anything).Return((<-chan any)(c), nil).Once()
+				h.mockSvc.subscribeFn = func(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error) {
+					return c, nil
+				}
 			},
 			args: Args{
 				clientMessages: []string{`{"type":"connection_init"}`, `{"id":"1","type":"subscribe","payload":{"query":"sub { hello }","operationName":"MySub","variables":{}}}`},
@@ -237,6 +267,14 @@ func TestConnect(t *testing.T) {
 			want: Want{
 				serverMessages: []string{`{"type":"connection_ack"}`, `{"id":"1","type":"next","payload":{"data":{"foo":"bar"}}}`, `{"id":"1","type":"complete"}`},
 				assertClose:    false,
+			},
+			verifyCalls: func(t *testing.T, calls []subscribeCall) {
+				if len(calls) != 1 {
+					t.Fatalf("expected 1 Subscribe call, got %d", len(calls))
+				}
+				if calls[0].document != "sub { hello }" || calls[0].operationName != "MySub" {
+					t.Fatalf("unexpected Subscribe call: document=%q operationName=%q", calls[0].document, calls[0].operationName)
+				}
 			},
 		},
 		"Error if subscribe sent first": {
@@ -248,6 +286,11 @@ func TestConnect(t *testing.T) {
 				serverMessages: []string{`{"type":"error","payload":{"message":"connection_init message not received"}}`},
 				assertClose:    true,
 			},
+			verifyCalls: func(t *testing.T, calls []subscribeCall) {
+				if len(calls) != 0 {
+					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
+				}
+			},
 		},
 		"Error if connection_init sent twice": {
 			setup: setupTest,
@@ -257,6 +300,11 @@ func TestConnect(t *testing.T) {
 			want: Want{
 				serverMessages: []string{`{"type":"connection_ack"}`, `{"type":"error","payload":{"message":"connection_init sent twice"}}`},
 				assertClose:    true,
+			},
+			verifyCalls: func(t *testing.T, calls []subscribeCall) {
+				if len(calls) != 0 {
+					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
+				}
 			},
 		},
 		"Ping/Pong": {
@@ -268,6 +316,11 @@ func TestConnect(t *testing.T) {
 				serverMessages: []string{`{"type":"connection_ack"}`, `{"type":"pong","payload":{"key":"val"}}`},
 				assertClose:    false,
 			},
+			verifyCalls: func(t *testing.T, calls []subscribeCall) {
+				if len(calls) != 0 {
+					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
+				}
+			},
 		},
 		"Error on subscribe with empty ID": {
 			setup: setupTest,
@@ -278,12 +331,19 @@ func TestConnect(t *testing.T) {
 				serverMessages: []string{`{"type":"connection_ack"}`, `{"type":"error","payload":{"message":"missing ID for subscribe operation"}}`},
 				assertClose:    false,
 			},
+			verifyCalls: func(t *testing.T, calls []subscribeCall) {
+				if len(calls) != 0 {
+					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
+				}
+			},
 		},
 		"Error on subscribe with duplicate ID": {
 			setup: setupTest,
-			mockExpectations: func(h mocker) {
+			setupService: func(h mocker) {
 				c := make(chan any)
-				h.mockSvc.On("Subscribe", mock.Anything, "sub { hello }", "", mock.Anything).Return((<-chan any)(c), nil).Once()
+				h.mockSvc.subscribeFn = func(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error) {
+					return c, nil
+				}
 			},
 			args: Args{
 				clientMessages: []string{`{"type":"connection_init"}`, `{"id":"1","type":"subscribe","payload":{"query":"sub { hello }"}}`, `{"id":"1","type":"subscribe","payload":{"query":"sub { hello }"}}`},
@@ -292,12 +352,19 @@ func TestConnect(t *testing.T) {
 				serverMessages: []string{`{"type":"connection_ack"}`, `{"id":"1","type":"error","payload":{"message":"duplicate operation ID"}}`},
 				assertClose:    false,
 			},
+			verifyCalls: func(t *testing.T, calls []subscribeCall) {
+				if len(calls) != 1 {
+					t.Fatalf("expected 1 Subscribe call, got %d", len(calls))
+				}
+			},
 		},
 		"Complete message stops subscription": {
 			setup: setupTest,
-			mockExpectations: func(h mocker) {
+			setupService: func(h mocker) {
 				c := make(chan any)
-				h.mockSvc.On("Subscribe", mock.Anything, "sub { hello }", "", mock.Anything).Return((<-chan any)(c), nil).Once()
+				h.mockSvc.subscribeFn = func(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error) {
+					return c, nil
+				}
 			},
 			args: Args{
 				clientMessages: []string{`{"type":"connection_init"}`, `{"id":"1","type":"subscribe","payload":{"query":"sub { hello }"}}`, `{"id":"1","type":"complete"}`},
@@ -306,11 +373,18 @@ func TestConnect(t *testing.T) {
 				serverMessages: []string{`{"type":"connection_ack"}`},
 				assertClose:    false,
 			},
+			verifyCalls: func(t *testing.T, calls []subscribeCall) {
+				if len(calls) != 1 {
+					t.Fatalf("expected 1 Subscribe call, got %d", len(calls))
+				}
+			},
 		},
 		"Subscription error": {
 			setup: setupTest,
-			mockExpectations: func(h mocker) {
-				h.mockSvc.On("Subscribe", mock.Anything, "sub { hello }", "", mock.Anything).Return((<-chan any)(nil), errors.New("test sub error")).Once()
+			setupService: func(h mocker) {
+				h.mockSvc.subscribeFn = func(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error) {
+					return nil, errors.New("test sub error")
+				}
 			},
 			args: Args{
 				clientMessages: []string{`{"type":"connection_init"}`, `{"id":"1s","type":"subscribe","payload":{"query":"sub { hello }"}}`},
@@ -318,6 +392,11 @@ func TestConnect(t *testing.T) {
 			want: Want{
 				serverMessages: []string{`{"type":"connection_ack"}`, `{"id":"1s","type":"error","payload":{"message":"test sub error"}}`},
 				assertClose:    false,
+			},
+			verifyCalls: func(t *testing.T, calls []subscribeCall) {
+				if len(calls) != 1 {
+					t.Fatalf("expected 1 Subscribe call, got %d", len(calls))
+				}
 			},
 		},
 		"Connection init timeout": {
@@ -329,6 +408,11 @@ func TestConnect(t *testing.T) {
 				serverMessages: []string{`{"type":"error","payload":{"message":"connection initialisation timeout"}}`},
 				assertClose:    true,
 			},
+			verifyCalls: func(t *testing.T, calls []subscribeCall) {
+				if len(calls) != 0 {
+					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
+				}
+			},
 		},
 	}
 
@@ -338,8 +422,8 @@ func TestConnect(t *testing.T) {
 
 			h := tt.setup(t)
 
-			if tt.mockExpectations != nil {
-				tt.mockExpectations(h)
+			if tt.setupService != nil {
+				tt.setupService(h)
 			}
 
 			go Connect(context.Background(), h.conn, h.mockSvc, tt.args.options...)
@@ -357,13 +441,15 @@ func TestConnect(t *testing.T) {
 
 			receivedMessages := receiveTestMessages(t, h)
 
-			assert.Equal(t, len(tt.want.serverMessages), len(receivedMessages), "Unexpected number of messages received")
+			if len(tt.want.serverMessages) != len(receivedMessages) {
+				t.Fatalf("unexpected number of messages received: want=%d got=%d", len(tt.want.serverMessages), len(receivedMessages))
+			}
 
 			for i, expectedMsg := range tt.want.serverMessages {
 				if i >= len(receivedMessages) {
 					break
 				}
-				requireEqualJSON(t, expectedMsg, receivedMessages[i], "Message %d mismatch", i)
+				requireEqualJSON(t, expectedMsg, receivedMessages[i], fmt.Sprintf("Message %d mismatch", i))
 			}
 
 			if tt.want.assertClose {
@@ -375,7 +461,9 @@ func TestConnect(t *testing.T) {
 				}
 			}
 
-			h.mockSvc.AssertExpectations(t)
+			if tt.verifyCalls != nil {
+				tt.verifyCalls(t, h.mockSvc.getCalls())
+			}
 		})
 	}
 }
@@ -391,18 +479,27 @@ func getMapKeys(m map[string]func()) []string {
 	return keys
 }
 
-func requireEqualJSON(t *testing.T, expected string, actual json.RawMessage, msgAndArgs ...any) {
+func requireEqualJSON(t *testing.T, expected string, actual json.RawMessage, msg string) {
 	t.Helper()
 
 	var expJSON, actJSON any
 
 	err := json.Unmarshal([]byte(expected), &expJSON)
-	require.NoError(t, err, "Failed to unmarshal expected JSON")
+	if err != nil {
+		t.Fatalf("failed to unmarshal expected JSON: %v", err)
+	}
 
 	err = json.Unmarshal(actual, &actJSON)
-	require.NoError(t, err, "Failed to unmarshal actual JSON")
+	if err != nil {
+		t.Fatalf("failed to unmarshal actual JSON: %v", err)
+	}
 
-	assert.Equal(t, expJSON, actJSON, msgAndArgs...)
+	if !reflect.DeepEqual(expJSON, actJSON) {
+		if msg == "" {
+			t.Fatalf("expected JSON %v got %v", expJSON, actJSON)
+		}
+		t.Fatalf("%s: expected %v got %v", msg, expJSON, actJSON)
+	}
 }
 
 // receiveTestMessages handles the logic of listening for server messages with a timeout

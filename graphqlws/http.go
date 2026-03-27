@@ -2,7 +2,6 @@ package graphqlws
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -11,13 +10,18 @@ import (
 	"github.com/graph-gophers/graphql-transport-ws/graphqlws/internal/connection"
 )
 
-// ProtocolGraphQLWS is websocket subprotocol ID for GraphQL over WebSocket
-// see https://github.com/apollographql/subscriptions-transport-ws
-const ProtocolGraphQLWS = "graphql-ws"
+const (
+	// ProtocolGraphQLTransportWS is the modern websocket subprotocol ID for GraphQL over WebSocket.
+	// see https://github.com/enisdenjo/graphql-ws
+	ProtocolGraphQLTransportWS = "graphql-transport-ws"
+	// ProtocolGraphQLWS is the deprecated websocket subprotocol ID for GraphQL over WebSocket.
+	// see https://github.com/apollographql/subscriptions-transport-ws
+	ProtocolGraphQLWS = "graphql-ws"
+)
 
 var defaultUpgrader = websocket.Upgrader{
 	CheckOrigin:  func(r *http.Request) bool { return true },
-	Subprotocols: []string{ProtocolGraphQLWS},
+	Subprotocols: []string{ProtocolGraphQLTransportWS, ProtocolGraphQLWS},
 }
 
 type handler struct {
@@ -55,7 +59,21 @@ type Option interface {
 
 type options struct {
 	contextGenerators []ContextGenerator
-	connectOptions    []connection.Option
+	readLimit         int64
+	writeTimeout      time.Duration
+	hasReadLimit      bool
+	hasWriteTimeout   bool
+}
+
+func (o *options) connectionOptions() []connection.Option {
+	var connOptions []connection.Option
+	if o.hasReadLimit {
+		connOptions = append(connOptions, connection.ReadLimit(o.readLimit))
+	}
+	if o.hasWriteTimeout {
+		connOptions = append(connOptions, connection.WriteTimeout(o.writeTimeout))
+	}
+	return connOptions
 }
 
 type optionFunc func(*options)
@@ -75,16 +93,16 @@ func WithContextGenerator(f ContextGenerator) Option {
 // WithReadLimit limits the maximum size of incoming messages
 func WithReadLimit(limit int64) Option {
 	return optionFunc(func(o *options) {
-		connOpt := connection.ReadLimit(limit)
-		o.connectOptions = append(o.connectOptions, connOpt)
+		o.readLimit = limit
+		o.hasReadLimit = true
 	})
 }
 
 // WithWriteTimeout sets a timeout for outgoing messages
 func WithWriteTimeout(d time.Duration) Option {
 	return optionFunc(func(o *options) {
-		connOpt := connection.WriteTimeout(d)
-		o.connectOptions = append(o.connectOptions, connOpt)
+		o.writeTimeout = d
+		o.hasWriteTimeout = true
 	})
 }
 
@@ -109,37 +127,42 @@ func (h *handler) NewHandlerFunc(svc connection.GraphQLService, httpHandler http
 	o := applyOptions(options...)
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		for _, subprotocol := range websocket.Subprotocols(r) {
-			if subprotocol != ProtocolGraphQLWS {
-				continue
-			}
-
-			ctx, err := buildContext(r, o.contextGenerators)
-			if err != nil {
-				w.Header().Set("X-WebSocket-Upgrade-Failure", err.Error())
+		if !websocket.IsWebSocketUpgrade(r) {
+			if httpHandler == nil {
+				http.Error(w, "Not Found", http.StatusNotFound)
 				return
 			}
 
-			ws, err := h.Upgrader.Upgrade(w, r, nil)
-			if err != nil {
-				w.Header().Set("X-WebSocket-Upgrade-Failure", err.Error())
-				return
-			}
-
-			if ws.Subprotocol() != ProtocolGraphQLWS {
-				w.Header().Set("X-WebSocket-Upgrade-Failure",
-					fmt.Sprintf("upgraded websocket has wrong subprotocol (%s)", ws.Subprotocol()))
-				ws.Close()
-				return
-			}
-
-			go connection.Connect(ctx, ws, svc, o.connectOptions...)
+			httpHandler.ServeHTTP(w, r)
 			return
 		}
 
-		// Fallback to HTTP
-		w.Header().Set("X-WebSocket-Upgrade-Failure", "no subprotocols available")
-		httpHandler.ServeHTTP(w, r)
+		ctx, err := buildContext(r, o.contextGenerators)
+		if err != nil {
+			w.Header().Set("X-WebSocket-Upgrade-Failure", err.Error())
+			return
+		}
+
+		ws, err := h.Upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			// UPGRADE FAILED: The Upgrader has already written an error response.
+			// Do not call the httpHandler
+			return
+		}
+
+		switch ws.Subprotocol() {
+		case ProtocolGraphQLWS:
+			go connection.Connect(ctx, ws, svc, o.connectionOptions()...)
+
+		case ProtocolGraphQLTransportWS:
+			// TODO: support graphql-transport-ws subprotocol
+			w.Header().Set("X-WebSocket-Upgrade-Failure", "unsupported subprotocol")
+			ws.Close()
+
+		default:
+			w.Header().Set("X-WebSocket-Upgrade-Failure", "unsupported subprotocol")
+			ws.Close()
+		}
 	}
 }
 

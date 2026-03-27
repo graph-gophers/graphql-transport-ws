@@ -21,12 +21,12 @@ type mockGraphQLService struct {
 // Subscribe is a mock implementation of a GraphQL subscription operation.
 // It records the call with the provided context and GraphQL parameters,
 // then returns a pre-configured channel and error based on the test setup.
-func (s *mockGraphQLService) Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]interface{}) (<-chan interface{}, error) {
+func (s *mockGraphQLService) Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error) {
 	args := s.Called(ctx, document, operationName, variableValues)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).(<-chan interface{}), args.Error(1)
+	return args.Get(0).(<-chan any), args.Error(1)
 }
 
 type mockConnection struct {
@@ -48,7 +48,7 @@ func newMockConnection() *mockConnection {
 }
 
 // ReadJSON reads the next JSON-formatted message from the connection and unmarshals it
-func (ws *mockConnection) ReadJSON(v interface{}) error {
+func (ws *mockConnection) ReadJSON(v any) error {
 	msg, ok := <-ws.in
 	if !ok {
 		return errors.New("connection closed")
@@ -58,7 +58,7 @@ func (ws *mockConnection) ReadJSON(v interface{}) error {
 }
 
 // WriteJSON marshals the value v to JSON and sends it as a message over the connection
-func (ws *mockConnection) WriteJSON(v interface{}) error {
+func (ws *mockConnection) WriteJSON(v any) error {
 	ws.mtx.Lock()
 	defer ws.mtx.Unlock()
 
@@ -144,7 +144,6 @@ func TestOperationMap(t *testing.T) {
 		}
 
 		for name, tt := range testTable {
-			tt := tt
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 
@@ -189,7 +188,6 @@ func TestOperationMap(t *testing.T) {
 		}
 
 		for name, tt := range testTable {
-			tt := tt
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				om := newOperationMap()
@@ -226,12 +224,12 @@ func TestConnect(t *testing.T) {
 		"Successful subscription": {
 			setup: setupTest,
 			mockExpectations: func(h mocker) {
-				c := make(chan interface{}, 1)
+				c := make(chan any, 1)
 				c <- json.RawMessage(`{"data":{"foo":"bar"}}`)
 
 				close(c)
 
-				h.mockSvc.On("Subscribe", mock.Anything, "sub { hello }", "MySub", mock.Anything).Return((<-chan interface{})(c), nil).Once()
+				h.mockSvc.On("Subscribe", mock.Anything, "sub { hello }", "MySub", mock.Anything).Return((<-chan any)(c), nil).Once()
 			},
 			args: Args{
 				clientMessages: []string{`{"type":"connection_init"}`, `{"id":"1","type":"subscribe","payload":{"query":"sub { hello }","operationName":"MySub","variables":{}}}`},
@@ -284,8 +282,8 @@ func TestConnect(t *testing.T) {
 		"Error on subscribe with duplicate ID": {
 			setup: setupTest,
 			mockExpectations: func(h mocker) {
-				c := make(chan interface{})
-				h.mockSvc.On("Subscribe", mock.Anything, "sub { hello }", "", mock.Anything).Return((<-chan interface{})(c), nil).Once()
+				c := make(chan any)
+				h.mockSvc.On("Subscribe", mock.Anything, "sub { hello }", "", mock.Anything).Return((<-chan any)(c), nil).Once()
 			},
 			args: Args{
 				clientMessages: []string{`{"type":"connection_init"}`, `{"id":"1","type":"subscribe","payload":{"query":"sub { hello }"}}`, `{"id":"1","type":"subscribe","payload":{"query":"sub { hello }"}}`},
@@ -298,8 +296,8 @@ func TestConnect(t *testing.T) {
 		"Complete message stops subscription": {
 			setup: setupTest,
 			mockExpectations: func(h mocker) {
-				c := make(chan interface{})
-				h.mockSvc.On("Subscribe", mock.Anything, "sub { hello }", "", mock.Anything).Return((<-chan interface{})(c), nil).Once()
+				c := make(chan any)
+				h.mockSvc.On("Subscribe", mock.Anything, "sub { hello }", "", mock.Anything).Return((<-chan any)(c), nil).Once()
 			},
 			args: Args{
 				clientMessages: []string{`{"type":"connection_init"}`, `{"id":"1","type":"subscribe","payload":{"query":"sub { hello }"}}`, `{"id":"1","type":"complete"}`},
@@ -312,7 +310,7 @@ func TestConnect(t *testing.T) {
 		"Subscription error": {
 			setup: setupTest,
 			mockExpectations: func(h mocker) {
-				h.mockSvc.On("Subscribe", mock.Anything, "sub { hello }", "", mock.Anything).Return((<-chan interface{})(nil), errors.New("test sub error")).Once()
+				h.mockSvc.On("Subscribe", mock.Anything, "sub { hello }", "", mock.Anything).Return((<-chan any)(nil), errors.New("test sub error")).Once()
 			},
 			args: Args{
 				clientMessages: []string{`{"type":"connection_init"}`, `{"id":"1s","type":"subscribe","payload":{"query":"sub { hello }"}}`},
@@ -335,8 +333,6 @@ func TestConnect(t *testing.T) {
 	}
 
 	for name, tt := range testTable {
-		tt := tt
-
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
@@ -395,10 +391,10 @@ func getMapKeys(m map[string]func()) []string {
 	return keys
 }
 
-func requireEqualJSON(t *testing.T, expected string, actual json.RawMessage, msgAndArgs ...interface{}) {
+func requireEqualJSON(t *testing.T, expected string, actual json.RawMessage, msgAndArgs ...any) {
 	t.Helper()
 
-	var expJSON, actJSON interface{}
+	var expJSON, actJSON any
 
 	err := json.Unmarshal([]byte(expected), &expJSON)
 	require.NoError(t, err, "Failed to unmarshal expected JSON")

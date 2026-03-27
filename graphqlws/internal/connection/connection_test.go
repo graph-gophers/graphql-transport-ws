@@ -296,7 +296,6 @@ func TestConnect(t *testing.T) {
 		},
 	}
 	for _, tt := range testTable {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			ws := newConnection()
@@ -307,13 +306,13 @@ func TestConnect(t *testing.T) {
 }
 
 type gqlService struct {
-	payloads <-chan interface{}
+	payloads <-chan any
 	err      error
 	delay    time.Duration
 }
 
 func newGQLService(pp ...string) *gqlService {
-	c := make(chan interface{}, len(pp))
+	c := make(chan any, len(pp))
 	for _, p := range pp {
 		c <- json.RawMessage(p)
 	}
@@ -327,7 +326,7 @@ func (g *gqlService) addDelay(d time.Duration) *gqlService {
 	return g
 }
 
-func (h *gqlService) Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]interface{}) (payloads <-chan interface{}, err error) {
+func (h *gqlService) Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]any) (payloads <-chan any, err error) {
 	if h.delay > time.Duration(0) {
 		time.Sleep(h.delay)
 	}
@@ -357,7 +356,7 @@ func (ws *wsConnection) test(t *testing.T, messages []message) {
 	}
 }
 
-func (ws *wsConnection) ReadJSON(v interface{}) error {
+func (ws *wsConnection) ReadJSON(v any) error {
 	msg := <-ws.in
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -366,7 +365,7 @@ func (ws *wsConnection) ReadJSON(v interface{}) error {
 	return json.Unmarshal(data, v)
 }
 
-func (ws *wsConnection) WriteJSON(v interface{}) error {
+func (ws *wsConnection) WriteJSON(v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -389,13 +388,13 @@ func (ws *wsConnection) Close() error {
 }
 
 func requireEqualJSON(t *testing.T, expected string, got json.RawMessage) {
-	var expJSON interface{}
+	var expJSON any
 	err := json.Unmarshal([]byte(expected), &expJSON)
 	if err != nil {
 		t.Fatalf("error mashalling expected json: %s", err.Error())
 	}
 
-	var gotJSON interface{}
+	var gotJSON any
 	err = json.Unmarshal(got, &gotJSON)
 	if err != nil {
 		t.Fatalf("error mashalling got json: %s", err.Error())

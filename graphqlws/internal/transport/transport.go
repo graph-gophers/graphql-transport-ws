@@ -64,17 +64,17 @@ type operationMessage struct {
 }
 
 type subscribeMessagePayload struct {
-	OperationName string                 `json:"operationName"`
-	Query         string                 `json:"query"`
-	Variables     map[string]interface{} `json:"variables"`
+	OperationName string         `json:"operationName"`
+	Query         string         `json:"query"`
+	Variables     map[string]any `json:"variables"`
 }
 
 type wsConnection interface {
 	Close() error
-	ReadJSON(v interface{}) error
+	ReadJSON(v any) error
 	SetReadLimit(limit int64)
 	SetWriteDeadline(t time.Time) error
-	WriteJSON(v interface{}) error
+	WriteJSON(v any) error
 }
 
 type connection struct {
@@ -170,20 +170,6 @@ func (conn *connection) writeLoop(ctx context.Context) sendFunc {
 
 func (conn *connection) close() {
 	conn.cancel()
-}
-
-func (conn *connection) drainChannel(out chan *operationMessage) {
-	for {
-		select {
-		case msg := <-out:
-			conn.ws.SetWriteDeadline(time.Now().Add(conn.writeTimeout))
-			if err := conn.ws.WriteJSON(msg); err != nil {
-				return
-			}
-		default:
-			return
-		}
-	}
 }
 
 func (conn *connection) readLoop(ctx context.Context, send sendFunc) {

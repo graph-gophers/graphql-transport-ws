@@ -1,0 +1,35 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+    - gofumpt
+  settings:
+    gofmt:
+      simplify: true
+
+linters:
+  default: none
+  enable:
+    - govet
+    - ineffassign
+    - staticcheck
+    - unconvert
+    - unused
+    - misspell
+
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - deepequalerrors # remove later
+      enable:
+        - shadow
+    unconvert:
+      fast-math: false
+      safe: false

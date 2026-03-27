@@ -13,6 +13,8 @@ import (
 
 type operationMessageType string
 
+type contextKey string
+
 // https://github.com/apollographql/subscriptions-transport-ws/blob/a56491c6feacd96cab47b7a3df8c2cb1b6a96e36/src/message-types.ts
 const (
 	typeComplete            operationMessageType = "complete"
@@ -29,10 +31,10 @@ const (
 
 type wsConnection interface {
 	Close() error
-	ReadJSON(v interface{}) error
+	ReadJSON(v any) error
 	SetReadLimit(limit int64)
 	SetWriteDeadline(t time.Time) error
-	WriteJSON(v interface{}) error
+	WriteJSON(v any) error
 }
 
 type sendFunc func(id string, omType operationMessageType, payload json.RawMessage)
@@ -45,9 +47,9 @@ type operationMessage struct {
 }
 
 type startMessagePayload struct {
-	OperationName string                 `json:"operationName"`
-	Query         string                 `json:"query"`
-	Variables     map[string]interface{} `json:"variables"`
+	OperationName string         `json:"operationName"`
+	Query         string         `json:"query"`
+	Variables     map[string]any `json:"variables"`
 }
 
 type initMessagePayload struct{}
@@ -181,20 +183,21 @@ func (conn *connection) addSubscription(ctx context.Context,
 	cancel context.CancelFunc,
 	ops operationMap,
 	message operationMessage,
-	send sendFunc) {
+	send sendFunc,
+) {
 	defer cancel()
-	var c <-chan interface{}
+	var c <-chan any
 	var err error
 	var mp startMessagePayload
-	if err := json.Unmarshal(message.Payload, &mp); err != nil {
+	if err = json.Unmarshal(message.Payload, &mp); err != nil {
 		ep := errPayload(fmt.Errorf("invalid payload for type: %s", message.Type))
 		send(message.ID, typeConnectionError, ep)
 		return
 	}
 
-	var timeout = time.NewTimer(conn.writeTimeout)
-	var setupComplete = make(chan bool)
-	var bail = make(chan bool)
+	timeout := time.NewTimer(conn.writeTimeout)
+	setupComplete := make(chan bool)
+	bail := make(chan bool)
 
 	go func(t <-chan time.Time, kill chan bool) {
 		select {
@@ -284,7 +287,7 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 			}
 
 			opCtx, opCancel := context.WithCancel(ctx)
-			opCtx = context.WithValue(opCtx, "Header", header)
+			opCtx = context.WithValue(opCtx, contextKey("Header"), header)
 			opDone.add(msg.ID, opCancel)
 
 			go conn.addSubscription(opCtx, opCancel, opDone, msg, send)

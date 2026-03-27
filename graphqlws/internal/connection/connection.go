@@ -181,7 +181,8 @@ func (conn *connection) addSubscription(ctx context.Context,
 	cancel context.CancelFunc,
 	ops operationMap,
 	message operationMessage,
-	send sendFunc) {
+	send sendFunc,
+) {
 	defer cancel()
 	var c <-chan any
 	var err error
@@ -192,9 +193,9 @@ func (conn *connection) addSubscription(ctx context.Context,
 		return
 	}
 
-	var timeout = time.NewTimer(conn.writeTimeout)
-	var setupComplete = make(chan bool)
-	var bail = make(chan bool)
+	timeout := time.NewTimer(conn.writeTimeout)
+	setupComplete := make(chan bool)
+	bail := make(chan bool)
 
 	go func(t <-chan time.Time, kill chan bool) {
 		select {

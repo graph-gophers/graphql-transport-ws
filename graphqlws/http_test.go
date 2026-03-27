@@ -167,7 +167,6 @@ func TestNewHandlerFunc(t *testing.T) {
 	}
 
 	for name, tt := range testTable {
-
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 

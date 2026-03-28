@@ -7,40 +7,42 @@ import (
 	"fmt"
 	"sync"
 	"time"
-
-	"github.com/graph-gophers/graphql-transport-ws/graphqlws/internal/gql"
 )
+
+type Subscriber interface {
+	Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]any) (payloads <-chan any, err error)
+}
 
 // operationMap holds active subscriptions.
 type operationMap struct {
 	ops map[string]func()
-	mtx *sync.RWMutex
+	mu  *sync.RWMutex
 }
 
 func newOperationMap() operationMap {
 	return operationMap{
 		ops: make(map[string]func()),
-		mtx: &sync.RWMutex{},
+		mu:  &sync.RWMutex{},
 	}
 }
 
 func (o *operationMap) add(name string, done func()) {
-	o.mtx.Lock()
+	o.mu.Lock()
 	o.ops[name] = done
-	o.mtx.Unlock()
+	o.mu.Unlock()
 }
 
 func (o *operationMap) get(name string) (func(), bool) {
-	o.mtx.RLock()
+	o.mu.RLock()
 	f, ok := o.ops[name]
-	o.mtx.RUnlock()
+	o.mu.RUnlock()
 	return f, ok
 }
 
 func (o *operationMap) delete(name string) {
-	o.mtx.Lock()
+	o.mu.Lock()
 	delete(o.ops, name)
-	o.mtx.Unlock()
+	o.mu.Unlock()
 }
 
 type operationMessageType string
@@ -79,7 +81,8 @@ type wsConnection interface {
 
 type connection struct {
 	cancel       func()
-	service      gql.GraphQLService
+	maxOps       int
+	sub          Subscriber
 	writeTimeout time.Duration
 	ws           wsConnection
 }
@@ -100,15 +103,24 @@ func WriteTimeout(d time.Duration) Option {
 	}
 }
 
-func Connect(ctx context.Context, ws wsConnection, service gql.GraphQLService, options ...Option) {
+// MaxOperations limits the number of concurrent subscribe operations per
+// connection. A value of 0 disables the limit.
+func MaxOperations(n int) Option {
+	return func(conn *connection) {
+		conn.maxOps = n
+	}
+}
+
+func Connect(ctx context.Context, ws wsConnection, sub Subscriber, options ...Option) {
 	conn := &connection{
-		service: service,
-		ws:      ws,
+		sub: sub,
+		ws:  ws,
 	}
 
 	defaultOpts := []Option{
 		ReadLimit(4096),
 		WriteTimeout(time.Second * 3),
+		MaxOperations(100),
 	}
 
 	for _, opt := range append(defaultOpts, options...) {
@@ -201,12 +213,12 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 		case <-errChan:
 			// Read error occurred (e.g., client closed connection)
 			// Find and cancel all active operations
-			ops.mtx.Lock()
+			ops.mu.Lock()
 			for id, cancel := range ops.ops {
 				cancel()
 				delete(ops.ops, id)
 			}
-			ops.mtx.Unlock()
+			ops.mu.Unlock()
 			return
 		case <-initTimer.C:
 			if !initDone {
@@ -246,7 +258,8 @@ func (conn *connection) processMessages(ctx context.Context, msg *operationMessa
 		return errors.New("error connection_init sent twice, the connection will be closed")
 
 	case typePing:
-		send("", typePong, msg.Payload)
+		// Do not echo the payload — it is attacker-controlled data.
+		send("", typePong, nil)
 
 	case typeSubscribe:
 		if msg.ID == "" {
@@ -257,6 +270,16 @@ func (conn *connection) processMessages(ctx context.Context, msg *operationMessa
 		if _, exists := ops.get(msg.ID); exists {
 			send(msg.ID, typeError, errPayload(errors.New("duplicate operation ID")))
 			return nil
+		}
+
+		if conn.maxOps > 0 {
+			ops.mu.RLock()
+			count := len(ops.ops)
+			ops.mu.RUnlock()
+			if count >= conn.maxOps {
+				send(msg.ID, typeError, errPayload(errors.New("too many concurrent subscriptions")))
+				return nil
+			}
 		}
 
 		var payload subscribeMessagePayload
@@ -292,7 +315,7 @@ func (conn *connection) processMessages(ctx context.Context, msg *operationMessa
 func (conn *connection) runSubscription(ctx context.Context, id string, payload subscribeMessagePayload, send sendFunc, ops operationMap) {
 	defer ops.delete(id)
 
-	c, err := conn.service.Subscribe(ctx, payload.Query, payload.OperationName, payload.Variables)
+	c, err := conn.sub.Subscribe(ctx, payload.Query, payload.OperationName, payload.Variables)
 	if err != nil {
 		send(id, typeError, errPayload(err))
 		return

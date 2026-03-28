@@ -313,7 +313,7 @@ func TestConnect(t *testing.T) {
 				clientMessages: []string{`{"type":"connection_init"}`, `{"type":"ping","payload":{"key":"val"}}`},
 			},
 			want: Want{
-				serverMessages: []string{`{"type":"connection_ack"}`, `{"type":"pong","payload":{"key":"val"}}`},
+				serverMessages: []string{`{"type":"connection_ack"}`, `{"type":"pong"}`},
 				assertClose:    false,
 			},
 			verifyCalls: func(t *testing.T, calls []subscribeCall) {

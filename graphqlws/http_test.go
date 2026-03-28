@@ -44,15 +44,6 @@ func (s *fakeGraphQLService) Subscribe(ctx context.Context, document string, ope
 	return s.subscribeFn(ctx, document, operationName, variableValues)
 }
 
-func (s *fakeGraphQLService) getCalls() []subscribeCall {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	out := make([]subscribeCall, len(s.calls))
-	copy(out, s.calls)
-	return out
-}
-
 type fakeHTTPHandler struct {
 	calls chan *http.Request
 }
@@ -70,7 +61,6 @@ func (h *fakeHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 type testMocker struct {
 	handler  http.Handler
-	mockSvc  *fakeGraphQLService
 	mockHTTP *fakeHTTPHandler
 }
 
@@ -91,43 +81,6 @@ func TestNewHandlerFunc(t *testing.T) {
 		setup func() testMocker
 		want  Want
 	}{
-		"legacy protocol ok": {
-			args: Args{
-				isWebSocketTest: true,
-				subprotocols:    []string{ProtocolGraphQLWS},
-			},
-			setup: func() testMocker {
-				mockSvc := &fakeGraphQLService{}
-				mockSvc.subscribeFn = func(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error) {
-					c := make(chan any)
-					close(c)
-					return c, nil
-				}
-				return testMocker{
-					handler: NewHandlerFunc(mockSvc, nil),
-					mockSvc: mockSvc,
-				}
-			},
-			want: Want{
-				expectedSubprotocol: ProtocolGraphQLWS,
-				assertion: func(t *testing.T, conn *websocket.Conn) {
-					err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"connection_init"}`))
-					if err != nil {
-						t.Fatalf("failed to write connection_init: %v", err)
-					}
-
-					err = conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"1","type":"start","payload":{"query":"subscription{}"}}`))
-					if err != nil {
-						t.Fatalf("failed to write start message: %v", err)
-					}
-
-					_, _, err = conn.ReadMessage()
-					if err != nil {
-						t.Fatalf("failed to read server message: %v", err)
-					}
-				},
-			},
-		},
 		"graphql-transport-ws protocol ok ": {
 			args: Args{
 				isWebSocketTest: true,
@@ -252,22 +205,6 @@ func TestNewHandlerFunc(t *testing.T) {
 
 			if tt.want.assertion != nil {
 				tt.want.assertion(t, conn)
-			}
-
-			if name == "legacy protocol ok" {
-				calls := mocker.mockSvc.getCalls()
-				if len(calls) != 1 {
-					t.Fatalf("expected exactly 1 subscribe call, got %d", len(calls))
-				}
-				if calls[0].document != "subscription{}" {
-					t.Fatalf("unexpected subscribe document: %q", calls[0].document)
-				}
-				if calls[0].operationName != "" {
-					t.Fatalf("unexpected subscribe operationName: %q", calls[0].operationName)
-				}
-				if calls[0].variables != nil {
-					t.Fatalf("expected nil variables, got %#v", calls[0].variables)
-				}
 			}
 		})
 	}

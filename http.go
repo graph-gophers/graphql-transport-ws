@@ -6,33 +6,31 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/graph-gophers/graphql-transport-ws/graphqlws/internal/transport"
-
-	"github.com/graph-gophers/graphql-transport-ws/graphqlws/internal/connection"
-	"github.com/graph-gophers/graphql-transport-ws/graphqlws/internal/gql"
 )
 
 const (
 	// ProtocolGraphQLTransportWS is the modern websocket subprotocol ID for GraphQL over WebSocket.
 	// see https://github.com/enisdenjo/graphql-ws
 	ProtocolGraphQLTransportWS = "graphql-transport-ws"
-	// ProtocolGraphQLWS is the deprecated websocket subprotocol ID for GraphQL over WebSocket.
-	// see https://github.com/apollographql/subscriptions-transport-ws
-	ProtocolGraphQLWS = "graphql-ws"
 )
 
+// defaultUpgrader accepts connections from all origins.
+// WARNING: this makes the server vulnerable to Cross-Site WebSocket Hijacking
+// (CSWSH) when used with cookie-based authentication. Use WithCheckOrigin in
+// production to restrict connections to trusted origins.
 var defaultUpgrader = websocket.Upgrader{
 	CheckOrigin:  func(r *http.Request) bool { return true },
-	Subprotocols: []string{ProtocolGraphQLTransportWS, ProtocolGraphQLWS},
+	Subprotocols: []string{ProtocolGraphQLTransportWS},
 }
 
-type handler struct {
+// Handler is an http.Handler that supports GraphQL over WebSocket connections.
+type Handler struct {
 	Upgrader websocket.Upgrader
 }
 
 // NewHandler creates new GraphQL over websocket Handler with default websocket Upgrader.
-func NewHandler() handler {
-	return handler{Upgrader: defaultUpgrader}
+func NewHandler() Handler {
+	return Handler{Upgrader: defaultUpgrader}
 }
 
 // The ContextGeneratorFunc takes a context and the http request it can be used
@@ -65,31 +63,24 @@ type options struct {
 	writeTimeout      time.Duration
 	hasReadLimit      bool
 	hasWriteTimeout   bool
+	checkOrigin       func(*http.Request) bool
+	maxOperations     int
+	hasMaxOperations  bool
 }
 
-func (o *options) connectionOptions() []connection.Option {
-	var opts []connection.Option
+func (o *options) transportOptions() []transportOption {
+	var opts []transportOption
 
 	if o.hasReadLimit {
-		opts = append(opts, connection.ReadLimit(o.readLimit))
+		opts = append(opts, transportReadLimit(o.readLimit))
 	}
 
 	if o.hasWriteTimeout {
-		opts = append(opts, connection.WriteTimeout(o.writeTimeout))
+		opts = append(opts, transportWriteTimeout(o.writeTimeout))
 	}
 
-	return opts
-}
-
-func (o *options) transportOptions() []transport.Option {
-	var opts []transport.Option
-
-	if o.hasReadLimit {
-		opts = append(opts, transport.ReadLimit(o.readLimit))
-	}
-
-	if o.hasWriteTimeout {
-		opts = append(opts, transport.WriteTimeout(o.writeTimeout))
+	if o.hasMaxOperations {
+		opts = append(opts, transportMaxOperations(o.maxOperations))
 	}
 
 	return opts
@@ -102,14 +93,14 @@ func (f optionFunc) apply(o *options) {
 }
 
 // WithContextGenerator specifies that the background context of the websocket connection go routine
-// should be built upon by executing provided context generators
+// should be built upon by executing provided context generators.
 func WithContextGenerator(f ContextGenerator) Option {
 	return optionFunc(func(o *options) {
 		o.contextGenerators = append(o.contextGenerators, f)
 	})
 }
 
-// WithReadLimit limits the maximum size of incoming messages
+// WithReadLimit limits the maximum size of incoming messages.
 func WithReadLimit(limit int64) Option {
 	return optionFunc(func(o *options) {
 		o.readLimit = limit
@@ -117,11 +108,35 @@ func WithReadLimit(limit int64) Option {
 	})
 }
 
-// WithWriteTimeout sets a timeout for outgoing messages
+// WithWriteTimeout sets a timeout for outgoing messages.
 func WithWriteTimeout(d time.Duration) Option {
 	return optionFunc(func(o *options) {
 		o.writeTimeout = d
 		o.hasWriteTimeout = true
+	})
+}
+
+// WithCheckOrigin sets a custom origin-checking function for the WebSocket
+// upgrader. In production, restrict connections to trusted origins to prevent
+// Cross-Site WebSocket Hijacking (CSWSH), e.g.:
+//
+//	WithCheckOrigin(func(r *http.Request) bool {
+//		return r.Header.Get("Origin") == "https://example.com"
+//	})
+func WithCheckOrigin(fn func(*http.Request) bool) Option {
+	return optionFunc(func(o *options) {
+		o.checkOrigin = fn
+	})
+}
+
+// WithMaxSubscriptions limits the number of concurrent GraphQL subscriptions
+// allowed per WebSocket connection. The default is 100. Pass 0 to disable
+// the limit (not recommended for public-facing servers). Negative values are
+// treated as 0 (no limit).
+func WithMaxSubscriptions(n int) Option {
+	return optionFunc(func(o *options) {
+		o.maxOperations = max(n, 0)
+		o.hasMaxOperations = true
 	})
 }
 
@@ -136,14 +151,19 @@ func applyOptions(opts ...Option) *options {
 }
 
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
-func NewHandlerFunc(svc gql.GraphQLService, httpHandler http.Handler, options ...Option) http.HandlerFunc {
+func NewHandlerFunc(svc Subscriber, httpHandler http.Handler, options ...Option) http.HandlerFunc {
 	h := NewHandler()
 	return h.NewHandlerFunc(svc, httpHandler, options...)
 }
 
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
-func (h *handler) NewHandlerFunc(svc gql.GraphQLService, httpHandler http.Handler, options ...Option) http.HandlerFunc {
+func (h *Handler) NewHandlerFunc(svc Subscriber, httpHandler http.Handler, options ...Option) http.HandlerFunc {
 	o := applyOptions(options...)
+
+	upgrader := h.Upgrader
+	if o.checkOrigin != nil {
+		upgrader.CheckOrigin = o.checkOrigin
+	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !websocket.IsWebSocketUpgrade(r) {
@@ -158,11 +178,14 @@ func (h *handler) NewHandlerFunc(svc gql.GraphQLService, httpHandler http.Handle
 
 		ctx, err := buildContext(r, o.contextGenerators)
 		if err != nil {
-			w.Header().Set("X-WebSocket-Upgrade-Failure", err.Error())
+			// Preserve diagnostic information for failed context setup
+			// while returning a generic 403 response code
+			w.Header().Set("X-WebSocket-Upgrade-Failure", "context setup failed")
+			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 			return
 		}
 
-		ws, err := h.Upgrader.Upgrade(w, r, nil)
+		ws, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			// UPGRADE FAILED: The Upgrader has already written an error response.
 			// Do not call the httpHandler
@@ -170,11 +193,8 @@ func (h *handler) NewHandlerFunc(svc gql.GraphQLService, httpHandler http.Handle
 		}
 
 		switch ws.Subprotocol() {
-		case ProtocolGraphQLWS:
-			go connection.Connect(ctx, ws, svc, o.connectionOptions()...)
-
 		case ProtocolGraphQLTransportWS:
-			go transport.Connect(ctx, ws, svc, o.transportOptions()...)
+			go connectTransport(ctx, ws, svc, o.transportOptions()...)
 
 		default:
 			w.Header().Set("X-WebSocket-Upgrade-Failure", "unsupported subprotocol")

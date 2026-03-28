@@ -1,7 +1,8 @@
-package transport
+package graphqlws
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,24 +11,26 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
-type subscribeCall struct {
+type transportSubscribeCall struct {
 	ctx           context.Context
 	document      string
 	operationName string
 	variables     map[string]any
 }
 
-type fakeGraphQLService struct {
+type fakeTransportService struct {
 	mu          sync.Mutex
-	calls       []subscribeCall
+	calls       []transportSubscribeCall
 	subscribeFn func(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error)
 }
 
-func (s *fakeGraphQLService) Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error) {
+func (s *fakeTransportService) Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error) {
 	s.mu.Lock()
-	s.calls = append(s.calls, subscribeCall{ctx: ctx, document: document, operationName: operationName, variables: variableValues})
+	s.calls = append(s.calls, transportSubscribeCall{ctx: ctx, document: document, operationName: operationName, variables: variableValues})
 	s.mu.Unlock()
 
 	if s.subscribeFn == nil {
@@ -39,11 +42,11 @@ func (s *fakeGraphQLService) Subscribe(ctx context.Context, document string, ope
 	return s.subscribeFn(ctx, document, operationName, variableValues)
 }
 
-func (s *fakeGraphQLService) getCalls() []subscribeCall {
+func (s *fakeTransportService) getCalls() []transportSubscribeCall {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	out := make([]subscribeCall, len(s.calls))
+	out := make([]transportSubscribeCall, len(s.calls))
 	copy(out, s.calls)
 	return out
 }
@@ -54,6 +57,8 @@ type mockConnection struct {
 	closeCalled  chan bool
 	readLimit    int64
 	writeTimeout time.Duration
+	closeCode    int
+	closeReason  string
 	mtx          sync.Mutex
 	isClosed     bool
 }
@@ -103,6 +108,22 @@ func (ws *mockConnection) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
+func (ws *mockConnection) WriteControl(messageType int, data []byte, deadline time.Time) error {
+	if messageType != websocket.CloseMessage {
+		return nil
+	}
+
+	ws.mtx.Lock()
+	defer ws.mtx.Unlock()
+
+	if len(data) >= 2 {
+		ws.closeCode = int(binary.BigEndian.Uint16(data[:2]))
+		ws.closeReason = string(data[2:])
+	}
+
+	return nil
+}
+
 func (ws *mockConnection) Close() error {
 	ws.mtx.Lock()
 	defer ws.mtx.Unlock()
@@ -120,7 +141,7 @@ func (ws *mockConnection) Close() error {
 
 type mocker struct {
 	conn    *mockConnection
-	mockSvc *fakeGraphQLService
+	mockSvc *fakeTransportService
 }
 
 func setupTest(t *testing.T) mocker {
@@ -128,7 +149,7 @@ func setupTest(t *testing.T) mocker {
 
 	return mocker{
 		conn:    newMockConnection(),
-		mockSvc: &fakeGraphQLService{},
+		mockSvc: &fakeTransportService{},
 	}
 }
 
@@ -235,11 +256,12 @@ func TestConnect(t *testing.T) {
 
 	type Args struct {
 		clientMessages []string
-		options        []Option
+		options        []transportOption
 	}
 	type Want struct {
 		serverMessages []string
 		assertClose    bool
+		closeCode      int
 	}
 
 	testTable := map[string]struct {
@@ -247,7 +269,7 @@ func TestConnect(t *testing.T) {
 		setupService func(h mocker)
 		args         Args
 		want         Want
-		verifyCalls  func(t *testing.T, calls []subscribeCall)
+		verifyCalls  func(t *testing.T, calls []transportSubscribeCall)
 	}{
 		"Successful subscription": {
 			setup: setupTest,
@@ -268,7 +290,7 @@ func TestConnect(t *testing.T) {
 				serverMessages: []string{`{"type":"connection_ack"}`, `{"id":"1","type":"next","payload":{"data":{"foo":"bar"}}}`, `{"id":"1","type":"complete"}`},
 				assertClose:    false,
 			},
-			verifyCalls: func(t *testing.T, calls []subscribeCall) {
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
 				if len(calls) != 1 {
 					t.Fatalf("expected 1 Subscribe call, got %d", len(calls))
 				}
@@ -283,10 +305,11 @@ func TestConnect(t *testing.T) {
 				clientMessages: []string{`{"id":"1","type":"subscribe","payload":{}}`},
 			},
 			want: Want{
-				serverMessages: []string{`{"type":"error","payload":{"message":"connection_init message not received"}}`},
+				serverMessages: []string{},
 				assertClose:    true,
+				closeCode:      closeCodeUnauthorized,
 			},
-			verifyCalls: func(t *testing.T, calls []subscribeCall) {
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
 				if len(calls) != 0 {
 					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
 				}
@@ -298,10 +321,27 @@ func TestConnect(t *testing.T) {
 				clientMessages: []string{`{"type":"connection_init"}`, `{"type":"connection_init"}`},
 			},
 			want: Want{
-				serverMessages: []string{`{"type":"connection_ack"}`, `{"type":"error","payload":{"message":"connection_init sent twice"}}`},
+				serverMessages: []string{`{"type":"connection_ack"}`},
 				assertClose:    true,
+				closeCode:      closeCodeTooManyInitialisationReqs,
 			},
-			verifyCalls: func(t *testing.T, calls []subscribeCall) {
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
+				if len(calls) != 0 {
+					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
+				}
+			},
+		},
+		"Error on invalid connection_init payload": {
+			setup: setupTest,
+			args: Args{
+				clientMessages: []string{`{"type":"connection_init","payload":"invalid"}`},
+			},
+			want: Want{
+				serverMessages: []string{},
+				assertClose:    true,
+				closeCode:      closeCodeBadRequest,
+			},
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
 				if len(calls) != 0 {
 					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
 				}
@@ -316,7 +356,22 @@ func TestConnect(t *testing.T) {
 				serverMessages: []string{`{"type":"connection_ack"}`, `{"type":"pong","payload":{"key":"val"}}`},
 				assertClose:    false,
 			},
-			verifyCalls: func(t *testing.T, calls []subscribeCall) {
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
+				if len(calls) != 0 {
+					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
+				}
+			},
+		},
+		"Unsolicited pong ignored": {
+			setup: setupTest,
+			args: Args{
+				clientMessages: []string{`{"type":"connection_init"}`, `{"type":"pong","payload":{"hb":true}}`},
+			},
+			want: Want{
+				serverMessages: []string{`{"type":"connection_ack"}`},
+				assertClose:    false,
+			},
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
 				if len(calls) != 0 {
 					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
 				}
@@ -328,10 +383,11 @@ func TestConnect(t *testing.T) {
 				clientMessages: []string{`{"type":"connection_init"}`, `{"id":"","type":"subscribe","payload":{}}`},
 			},
 			want: Want{
-				serverMessages: []string{`{"type":"connection_ack"}`, `{"type":"error","payload":{"message":"missing ID for subscribe operation"}}`},
-				assertClose:    false,
+				serverMessages: []string{`{"type":"connection_ack"}`},
+				assertClose:    true,
+				closeCode:      closeCodeBadRequest,
 			},
-			verifyCalls: func(t *testing.T, calls []subscribeCall) {
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
 				if len(calls) != 0 {
 					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
 				}
@@ -349,12 +405,29 @@ func TestConnect(t *testing.T) {
 				clientMessages: []string{`{"type":"connection_init"}`, `{"id":"1","type":"subscribe","payload":{"query":"sub { hello }"}}`, `{"id":"1","type":"subscribe","payload":{"query":"sub { hello }"}}`},
 			},
 			want: Want{
-				serverMessages: []string{`{"type":"connection_ack"}`, `{"id":"1","type":"error","payload":{"message":"duplicate operation ID"}}`},
-				assertClose:    false,
+				serverMessages: []string{`{"type":"connection_ack"}`},
+				assertClose:    true,
+				closeCode:      closeCodeSubscriberAlreadyExists,
 			},
-			verifyCalls: func(t *testing.T, calls []subscribeCall) {
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
 				if len(calls) != 1 {
 					t.Fatalf("expected 1 Subscribe call, got %d", len(calls))
+				}
+			},
+		},
+		"Error on invalid subscribe payload": {
+			setup: setupTest,
+			args: Args{
+				clientMessages: []string{`{"type":"connection_init"}`, `{"id":"1","type":"subscribe","payload":"bad"}`},
+			},
+			want: Want{
+				serverMessages: []string{`{"type":"connection_ack"}`},
+				assertClose:    true,
+				closeCode:      closeCodeBadRequest,
+			},
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
+				if len(calls) != 0 {
+					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
 				}
 			},
 		},
@@ -373,9 +446,25 @@ func TestConnect(t *testing.T) {
 				serverMessages: []string{`{"type":"connection_ack"}`},
 				assertClose:    false,
 			},
-			verifyCalls: func(t *testing.T, calls []subscribeCall) {
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
 				if len(calls) != 1 {
 					t.Fatalf("expected 1 Subscribe call, got %d", len(calls))
+				}
+			},
+		},
+		"Error on complete with missing ID": {
+			setup: setupTest,
+			args: Args{
+				clientMessages: []string{`{"type":"connection_init"}`, `{"type":"complete"}`},
+			},
+			want: Want{
+				serverMessages: []string{`{"type":"connection_ack"}`},
+				assertClose:    true,
+				closeCode:      closeCodeBadRequest,
+			},
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
+				if len(calls) != 0 {
+					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
 				}
 			},
 		},
@@ -390,10 +479,10 @@ func TestConnect(t *testing.T) {
 				clientMessages: []string{`{"type":"connection_init"}`, `{"id":"1s","type":"subscribe","payload":{"query":"sub { hello }"}}`},
 			},
 			want: Want{
-				serverMessages: []string{`{"type":"connection_ack"}`, `{"id":"1s","type":"error","payload":{"message":"test sub error"}}`},
+				serverMessages: []string{`{"type":"connection_ack"}`, `{"id":"1s","type":"error","payload":[{"message":"test sub error"}]}`},
 				assertClose:    false,
 			},
-			verifyCalls: func(t *testing.T, calls []subscribeCall) {
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
 				if len(calls) != 1 {
 					t.Fatalf("expected 1 Subscribe call, got %d", len(calls))
 				}
@@ -402,13 +491,78 @@ func TestConnect(t *testing.T) {
 		"Connection init timeout": {
 			setup: setupTest,
 			args: Args{
-				options: []Option{WriteTimeout(50 * time.Millisecond)},
+				options: []transportOption{transportWriteTimeout(50 * time.Millisecond)},
 			},
 			want: Want{
-				serverMessages: []string{`{"type":"error","payload":{"message":"connection initialisation timeout"}}`},
+				serverMessages: []string{},
 				assertClose:    true,
+				closeCode:      closeCodeConnectionInitTimeout,
 			},
-			verifyCalls: func(t *testing.T, calls []subscribeCall) {
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
+				if len(calls) != 0 {
+					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
+				}
+			},
+		},
+		"Max operations exceeded": {
+			setup: setupTest,
+			setupService: func(h mocker) {
+				// Block the subscription channel to keep operations alive
+				c := make(chan any)
+				h.mockSvc.subscribeFn = func(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error) {
+					return c, nil
+				}
+			},
+			args: Args{
+				// Limit to 1 concurrent operation
+				options: []transportOption{transportMaxOperations(1)},
+				clientMessages: []string{
+					`{"type":"connection_init"}`,
+					`{"id":"1","type":"subscribe","payload":{"query":"sub { hello }"}}`,
+					`{"id":"2","type":"subscribe","payload":{"query":"sub { hello }"}}`,
+				},
+			},
+			want: Want{
+				serverMessages: []string{
+					`{"type":"connection_ack"}`,
+					`{"id":"2","type":"error","payload":[{"message":"too many concurrent subscriptions"}]}`,
+				},
+				assertClose: false,
+			},
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
+				// Only the first subscribe should invoke the Subscribe method
+				if len(calls) != 1 {
+					t.Fatalf("expected 1 Subscribe call, got %d", len(calls))
+				}
+			},
+		},
+		"Unknown message type closes socket": {
+			setup: setupTest,
+			args: Args{
+				clientMessages: []string{`{"type":"connection_init"}`, `{"type":"banana"}`},
+			},
+			want: Want{
+				serverMessages: []string{`{"type":"connection_ack"}`},
+				assertClose:    true,
+				closeCode:      closeCodeBadRequest,
+			},
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
+				if len(calls) != 0 {
+					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
+				}
+			},
+		},
+		"Malformed JSON closes socket": {
+			setup: setupTest,
+			args: Args{
+				clientMessages: []string{`{"type":`},
+			},
+			want: Want{
+				serverMessages: []string{},
+				assertClose:    true,
+				closeCode:      closeCodeBadRequest,
+			},
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
 				if len(calls) != 0 {
 					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
 				}
@@ -426,7 +580,7 @@ func TestConnect(t *testing.T) {
 				tt.setupService(h)
 			}
 
-			go Connect(context.Background(), h.conn, h.mockSvc, tt.args.options...)
+			go connectTransport(context.Background(), h.conn, h.mockSvc, tt.args.options...)
 
 			go func() {
 				for _, msg := range tt.args.clientMessages {
@@ -456,6 +610,9 @@ func TestConnect(t *testing.T) {
 				select {
 				case <-h.conn.closeCalled:
 					// Server closed connection as expected
+					if tt.want.closeCode != 0 && h.conn.closeCode != tt.want.closeCode {
+						t.Fatalf("unexpected close code: want=%d got=%d", tt.want.closeCode, h.conn.closeCode)
+					}
 				case <-time.After(1 * time.Second):
 					t.Fatal("timed out waiting for server to close connection")
 				}

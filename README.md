@@ -1,60 +1,35 @@
 # graphql-transport-ws
-[![Build Status](https://travis-ci.org/graph-gophers/graphql-transport-ws.svg?branch=master)](https://travis-ci.org/graph-gophers/graphql-transport-ws)
 
-**(Work in progress!)**
+WebSocket transport for GraphQL servers in Go.
 
-A Go package that leverages WebSockets to transport GraphQL subscriptions, queries and mutations implementing the [Apollo@v0.9.4 protocol](https://github.com/apollographql/subscriptions-transport-ws/blob/v0.9.4/PROTOCOL.md)
+The supported protocol is `graphql-transport-ws`.
 
-### Use with graph-gophers/graphql-go
+## With graphql-go
 
-To use this library with [github.com/graph-gophers/graphql-go](https://github.com/graph-gophers/graphql-go) you can wrap the `relay` handler it provides the following way:
+Wrap your HTTP GraphQL handler with `graphqlws.NewHandlerFunc`:
 
 ```go
-package main
+schema := graphql.MustParseSchema(schemaSDL, &rootResolver{})
+rh := &relay.Handler{Schema: schema}
 
-import (
-	"fmt"
-	"net/http"
-
-	graphql "github.com/graph-gophers/graphql-go"
-	"github.com/graph-gophers/graphql-go/relay"
-	"github.com/graph-gophers/graphql-transport-ws/graphqlws"
-)
-
-const schema = `
-	schema {
-		subscription: Subscription
-	}
-
-	type Subscription {
-		...
-	}
-`
-
-type resolver struct {
-	// ...
-}
-
-func main() {
-	// init graphQL schema
-	s, err := graphql.ParseSchema(schema, &resolver{})
-	if err != nil {
-		panic(err)
-	}
-
-	// graphQL handler
-	graphQLHandler := graphqlws.NewHandlerFunc(s, &relay.Handler{Schema: s})
-	http.HandleFunc("/graphql", graphQLHandler)
-
-	// start HTTP server
-	if err := http.ListenAndServe(fmt.Sprintf(":%d", 8080), nil); err != nil {
-		panic(err)
-	}
-}
+http.Handle("/graphql", graphqlws.NewHandlerFunc(schema, rh))
 ```
 
-For a more in depth example see [this repo](https://github.com/matiasanaya/go-graphql-subscription-example).
+Non-WebSocket requests are passed through to the wrapped HTTP handler, so the same endpoint can serve regular GraphQL HTTP traffic and WebSocket subscriptions.
 
-### Client
+See [example_test.go](./example_test.go) for a runnable server using `github.com/graph-gophers/graphql-go`.
 
-Check [apollographql/subscription-transport-ws](https://github.com/apollographql/subscriptions-transport-ws) for details on how to use WebSockets on the client side.
+## Client notes
+
+Connect to `/graphql` with WebSocket subprotocol `graphql-transport-ws`.
+
+Example subscription:
+
+```graphql
+subscription {
+  ticks {
+    at
+    count
+  }
+}
+```

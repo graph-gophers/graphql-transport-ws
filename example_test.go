@@ -1,4 +1,4 @@
-package main_test
+package graphqlws_test
 
 import (
 	"context"
@@ -10,10 +10,10 @@ import (
 	"github.com/gorilla/websocket"
 	graphql "github.com/graph-gophers/graphql-go"
 	"github.com/graph-gophers/graphql-go/relay"
-	"github.com/graph-gophers/graphql-transport-ws/graphqlws"
+	graphqlws "github.com/graph-gophers/graphql-transport-ws"
 )
 
-const schemaString = `
+const schemaSDL = `
 	schema {
 		query: Query
 		subscription: Subscription
@@ -72,7 +72,7 @@ func (r *tickEventResolver) Count() int32 {
 }
 
 func Example() {
-	schema := graphql.MustParseSchema(schemaString, &rootResolver{})
+	schema := graphql.MustParseSchema(schemaSDL, &rootResolver{})
 	rh := &relay.Handler{Schema: schema}
 	h := graphqlws.NewHandlerFunc(schema, rh)
 	srv := httptest.NewServer(h)

@@ -1,4 +1,4 @@
-package transport
+package graphqlws
 
 import (
 	"context"
@@ -11,10 +11,6 @@ import (
 
 	"github.com/gorilla/websocket"
 )
-
-type Subscriber interface {
-	Subscribe(ctx context.Context, document string, operation string, variables map[string]any) (<-chan any, error)
-}
 
 // operationMap holds active subscriptions.
 type operationMap struct {
@@ -101,39 +97,39 @@ type connection struct {
 
 type sendFunc func(id string, omType operationMessageType, payload json.RawMessage)
 
-type Option func(conn *connection)
+type transportOption func(conn *connection)
 
-func ReadLimit(limit int64) Option {
+func transportReadLimit(limit int64) transportOption {
 	return func(conn *connection) {
 		conn.ws.SetReadLimit(limit)
 	}
 }
 
-func WriteTimeout(d time.Duration) Option {
+func transportWriteTimeout(d time.Duration) transportOption {
 	return func(conn *connection) {
 		conn.writeTimeout = d
 	}
 }
 
-// MaxOperations limits the number of concurrent subscribe operations per
+// transportMaxOperations limits the number of concurrent subscribe operations per
 // connection. A value of 0 disables the limit. Negative values are treated
 // as 0 (no limit).
-func MaxOperations(n int) Option {
+func transportMaxOperations(n int) transportOption {
 	return func(conn *connection) {
 		conn.maxOps = max(n, 0)
 	}
 }
 
-func Connect(ctx context.Context, ws wsConnection, sub Subscriber, options ...Option) {
+func connectTransport(ctx context.Context, ws wsConnection, sub Subscriber, options ...transportOption) {
 	conn := &connection{
 		sub: sub,
 		ws:  ws,
 	}
 
-	defaultOpts := []Option{
-		ReadLimit(4096),
-		WriteTimeout(time.Second * 3),
-		MaxOperations(100),
+	defaultOpts := []transportOption{
+		transportReadLimit(4096),
+		transportWriteTimeout(time.Second * 3),
+		transportMaxOperations(100),
 	}
 
 	for _, opt := range append(defaultOpts, options...) {

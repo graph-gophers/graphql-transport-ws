@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/graph-gophers/graphql-transport-ws/graphqlws/internal/transport"
 )
 
 const (
@@ -24,13 +23,14 @@ var defaultUpgrader = websocket.Upgrader{
 	Subprotocols: []string{ProtocolGraphQLTransportWS},
 }
 
-type handler struct {
+// Handler is an http.Handler that supports GraphQL over WebSocket connections.
+type Handler struct {
 	Upgrader websocket.Upgrader
 }
 
 // NewHandler creates new GraphQL over websocket Handler with default websocket Upgrader.
-func NewHandler() handler {
-	return handler{Upgrader: defaultUpgrader}
+func NewHandler() Handler {
+	return Handler{Upgrader: defaultUpgrader}
 }
 
 // The ContextGeneratorFunc takes a context and the http request it can be used
@@ -68,19 +68,19 @@ type options struct {
 	hasMaxOperations  bool
 }
 
-func (o *options) transportOptions() []transport.Option {
-	var opts []transport.Option
+func (o *options) transportOptions() []transportOption {
+	var opts []transportOption
 
 	if o.hasReadLimit {
-		opts = append(opts, transport.ReadLimit(o.readLimit))
+		opts = append(opts, transportReadLimit(o.readLimit))
 	}
 
 	if o.hasWriteTimeout {
-		opts = append(opts, transport.WriteTimeout(o.writeTimeout))
+		opts = append(opts, transportWriteTimeout(o.writeTimeout))
 	}
 
 	if o.hasMaxOperations {
-		opts = append(opts, transport.MaxOperations(o.maxOperations))
+		opts = append(opts, transportMaxOperations(o.maxOperations))
 	}
 
 	return opts
@@ -157,7 +157,7 @@ func NewHandlerFunc(svc Subscriber, httpHandler http.Handler, options ...Option)
 }
 
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
-func (h *handler) NewHandlerFunc(svc Subscriber, httpHandler http.Handler, options ...Option) http.HandlerFunc {
+func (h *Handler) NewHandlerFunc(svc Subscriber, httpHandler http.Handler, options ...Option) http.HandlerFunc {
 	o := applyOptions(options...)
 
 	upgrader := h.Upgrader
@@ -194,7 +194,7 @@ func (h *handler) NewHandlerFunc(svc Subscriber, httpHandler http.Handler, optio
 
 		switch ws.Subprotocol() {
 		case ProtocolGraphQLTransportWS:
-			go transport.Connect(ctx, ws, svc, o.transportOptions()...)
+			go connectTransport(ctx, ws, svc, o.transportOptions()...)
 
 		default:
 			w.Header().Set("X-WebSocket-Upgrade-Failure", "unsupported subprotocol")

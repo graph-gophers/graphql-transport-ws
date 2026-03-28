@@ -10,7 +10,7 @@ import (
 )
 
 type Subscriber interface {
-	Subscribe(ctx context.Context, document string, operationName string, variableValues map[string]any) (payloads <-chan any, err error)
+	Subscribe(ctx context.Context, document string, operation string, variables map[string]any) (<-chan any, error)
 }
 
 // operationMap holds active subscriptions.
@@ -104,10 +104,11 @@ func WriteTimeout(d time.Duration) Option {
 }
 
 // MaxOperations limits the number of concurrent subscribe operations per
-// connection. A value of 0 disables the limit.
+// connection. A value of 0 disables the limit. Negative values are treated
+// as 0 (no limit).
 func MaxOperations(n int) Option {
 	return func(conn *connection) {
-		conn.maxOps = n
+		conn.maxOps = max(n, 0)
 	}
 }
 

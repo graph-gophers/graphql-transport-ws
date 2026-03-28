@@ -131,10 +131,11 @@ func WithCheckOrigin(fn func(*http.Request) bool) Option {
 
 // WithMaxSubscriptions limits the number of concurrent GraphQL subscriptions
 // allowed per WebSocket connection. The default is 100. Pass 0 to disable
-// the limit (not recommended for public-facing servers).
+// the limit (not recommended for public-facing servers). Negative values are
+// treated as 0 (no limit).
 func WithMaxSubscriptions(n int) Option {
 	return optionFunc(func(o *options) {
-		o.maxOperations = n
+		o.maxOperations = max(n, 0)
 		o.hasMaxOperations = true
 	})
 }
@@ -150,13 +151,13 @@ func applyOptions(opts ...Option) *options {
 }
 
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
-func NewHandlerFunc(svc transport.Subscriber, httpHandler http.Handler, options ...Option) http.HandlerFunc {
+func NewHandlerFunc(svc Subscriber, httpHandler http.Handler, options ...Option) http.HandlerFunc {
 	h := NewHandler()
 	return h.NewHandlerFunc(svc, httpHandler, options...)
 }
 
 // NewHandlerFunc returns an http.HandlerFunc that supports GraphQL over websockets
-func (h *handler) NewHandlerFunc(svc transport.Subscriber, httpHandler http.Handler, options ...Option) http.HandlerFunc {
+func (h *handler) NewHandlerFunc(svc Subscriber, httpHandler http.Handler, options ...Option) http.HandlerFunc {
 	o := applyOptions(options...)
 
 	upgrader := h.Upgrader
@@ -177,6 +178,9 @@ func (h *handler) NewHandlerFunc(svc transport.Subscriber, httpHandler http.Hand
 
 		ctx, err := buildContext(r, o.contextGenerators)
 		if err != nil {
+			// Preserve diagnostic information for failed context setup
+			// while returning a generic 403 response code
+			w.Header().Set("X-WebSocket-Upgrade-Failure", "context setup failed")
 			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 			return
 		}

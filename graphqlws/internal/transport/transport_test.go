@@ -414,6 +414,38 @@ func TestConnect(t *testing.T) {
 				}
 			},
 		},
+		"Max operations exceeded": {
+			setup: setupTest,
+			setupService: func(h mocker) {
+				// Block the subscription channel to keep operations alive
+				c := make(chan any)
+				h.mockSvc.subscribeFn = func(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error) {
+					return c, nil
+				}
+			},
+			args: Args{
+				// Limit to 1 concurrent operation
+				options: []Option{MaxOperations(1)},
+				clientMessages: []string{
+					`{"type":"connection_init"}`,
+					`{"id":"1","type":"subscribe","payload":{"query":"sub { hello }"}}`,
+					`{"id":"2","type":"subscribe","payload":{"query":"sub { hello }"}}`,
+				},
+			},
+			want: Want{
+				serverMessages: []string{
+					`{"type":"connection_ack"}`,
+					`{"id":"2","type":"error","payload":{"message":"too many concurrent subscriptions"}}`,
+				},
+				assertClose: false,
+			},
+			verifyCalls: func(t *testing.T, calls []subscribeCall) {
+				// Only the first subscribe should invoke the Subscribe method
+				if len(calls) != 1 {
+					t.Fatalf("expected 1 Subscribe call, got %d", len(calls))
+				}
+			},
+		},
 	}
 
 	for name, tt := range testTable {

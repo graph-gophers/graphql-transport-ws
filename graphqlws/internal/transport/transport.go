@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 type Subscriber interface {
@@ -59,6 +62,14 @@ const (
 	typeComplete       operationMessageType = "complete"
 )
 
+const (
+	closeCodeBadRequest                = 4400
+	closeCodeUnauthorized              = 4401
+	closeCodeConnectionInitTimeout     = 4408
+	closeCodeSubscriberAlreadyExists   = 4409
+	closeCodeTooManyInitialisationReqs = 4429
+)
+
 type operationMessage struct {
 	ID      string               `json:"id,omitempty"`
 	Payload json.RawMessage      `json:"payload,omitempty"`
@@ -76,6 +87,7 @@ type wsConnection interface {
 	ReadJSON(v any) error
 	SetReadLimit(limit int64)
 	SetWriteDeadline(t time.Time) error
+	WriteControl(messageType int, data []byte, deadline time.Time) error
 	WriteJSON(v any) error
 }
 
@@ -185,6 +197,15 @@ func (conn *connection) close() {
 	conn.cancel()
 }
 
+func (conn *connection) closeWithCode(code int, reason string) {
+	_ = conn.ws.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(code, reason),
+		time.Now().Add(conn.writeTimeout),
+	)
+	conn.cancel()
+}
+
 func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 	defer conn.close()
 
@@ -211,8 +232,11 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-errChan:
+		case err := <-errChan:
 			// Read error occurred (e.g., client closed connection)
+			if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) && !errors.Is(err, io.EOF) && err.Error() != "connection closed" {
+				conn.closeWithCode(closeCodeBadRequest, "invalid message")
+			}
 			// Find and cancel all active operations
 			ops.mu.Lock()
 			for id, cancel := range ops.ops {
@@ -223,8 +247,8 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 			return
 		case <-initTimer.C:
 			if !initDone {
-				// Client failed to send connection_init in time
-				send("", typeError, errPayload(errors.New("connection initialisation timeout")))
+				// Client failed to send connection_init in time.
+				conn.closeWithCode(closeCodeConnectionInitTimeout, "Connection initialisation timeout")
 				return
 			}
 		case msg := <-msgChan:
@@ -232,8 +256,16 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 				initTimer.Stop()
 
 				if msg.Type != typeConnectionInit {
-					send("", typeError, errPayload(errors.New("connection_init message not received")))
+					conn.closeWithCode(closeCodeUnauthorized, "Unauthorized")
 					return
+				}
+
+				if len(msg.Payload) > 0 {
+					var initPayload map[string]any
+					if err := json.Unmarshal(msg.Payload, &initPayload); err != nil {
+						conn.closeWithCode(closeCodeBadRequest, "invalid connection_init payload")
+						return
+					}
 				}
 
 				// TODO: Add payload handling for auth here if needed
@@ -255,22 +287,24 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 func (conn *connection) processMessages(ctx context.Context, msg *operationMessage, send sendFunc, ops operationMap) error {
 	switch msg.Type {
 	case typeConnectionInit:
-		send("", typeError, errPayload(errors.New("connection_init sent twice")))
-		return errors.New("error connection_init sent twice, the connection will be closed")
+		conn.closeWithCode(closeCodeTooManyInitialisationReqs, "Too many initialisation requests")
+		return errors.New("connection_init sent twice")
 
 	case typePing:
-		// Do not echo the payload — it is attacker-controlled data.
-		send("", typePong, nil)
+		send("", typePong, msg.Payload)
+
+	case typePong:
+		// Pong can be sent unsolicited by either peer; ignore.
 
 	case typeSubscribe:
 		if msg.ID == "" {
-			send("", typeError, errPayload(errors.New("missing ID for subscribe operation")))
-			return nil
+			conn.closeWithCode(closeCodeBadRequest, "missing ID for subscribe operation")
+			return errors.New("missing ID for subscribe operation")
 		}
 
 		if _, exists := ops.get(msg.ID); exists {
-			send(msg.ID, typeError, errPayload(errors.New("duplicate operation ID")))
-			return nil
+			conn.closeWithCode(closeCodeSubscriberAlreadyExists, fmt.Sprintf("Subscriber for %s already exists", msg.ID))
+			return errors.New("duplicate operation ID")
 		}
 
 		if conn.maxOps > 0 {
@@ -286,8 +320,8 @@ func (conn *connection) processMessages(ctx context.Context, msg *operationMessa
 		var payload subscribeMessagePayload
 
 		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
-			send(msg.ID, typeError, errPayload(fmt.Errorf("invalid subscribe payload: %w", err)))
-			return nil
+			conn.closeWithCode(closeCodeBadRequest, "invalid subscribe payload")
+			return errors.New("invalid subscribe payload")
 		}
 
 		opCtx, opCancel := context.WithCancel(ctx)
@@ -297,8 +331,8 @@ func (conn *connection) processMessages(ctx context.Context, msg *operationMessa
 
 	case typeComplete:
 		if msg.ID == "" {
-			send("", typeError, errPayload(errors.New("missing ID for complete operation")))
-			return nil
+			conn.closeWithCode(closeCodeBadRequest, "missing ID for complete operation")
+			return errors.New("missing ID for complete operation")
 		}
 
 		if opCancel, ok := ops.get(msg.ID); ok {
@@ -307,7 +341,8 @@ func (conn *connection) processMessages(ctx context.Context, msg *operationMessa
 		}
 
 	default:
-		send(msg.ID, typeError, errPayload(fmt.Errorf("unknown message type: %s", msg.Type)))
+		conn.closeWithCode(closeCodeBadRequest, fmt.Sprintf("unknown message type: %s", msg.Type))
+		return errors.New("unknown message type")
 	}
 
 	return nil
@@ -346,11 +381,9 @@ func (conn *connection) runSubscription(ctx context.Context, id string, payload 
 }
 
 func errPayload(err error) json.RawMessage {
-	b, _ := json.Marshal(struct {
-		Message string `json:"message"`
-	}{
-		Message: err.Error(),
-	})
+	b, _ := json.Marshal([]map[string]string{{
+		"message": err.Error(),
+	}})
 
 	return b
 }

@@ -333,7 +333,8 @@ func TestWithCheckOrigin(t *testing.T) {
 		}
 		defer conn.Close()
 
-		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"connection_init"}`)); err != nil {
+		err = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"connection_init"}`))
+		if err != nil {
 			t.Fatalf("failed to send connection_init: %v", err)
 		}
 

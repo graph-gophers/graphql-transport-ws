@@ -1,4 +1,4 @@
-package graphqlws
+package graphqlws_test
 
 import (
 	"context"
@@ -6,13 +6,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
+	graphqlws "github.com/graph-gophers/graphql-transport-ws"
 )
 
 type contextKey string
@@ -84,14 +84,14 @@ func TestNewHandlerFunc(t *testing.T) {
 		"graphql-transport-ws protocol ok ": {
 			args: Args{
 				isWebSocketTest: true,
-				subprotocols:    []string{ProtocolGraphQLTransportWS},
+				subprotocols:    []string{graphqlws.ProtocolGraphQLTransportWS},
 			},
 			setup: func() testMocker {
 				mockSvc := &fakeGraphQLService{}
-				return testMocker{handler: NewHandlerFunc(mockSvc, nil)}
+				return testMocker{handler: graphqlws.NewHandlerFunc(mockSvc, nil)}
 			},
 			want: Want{
-				expectedSubprotocol: ProtocolGraphQLTransportWS,
+				expectedSubprotocol: graphqlws.ProtocolGraphQLTransportWS,
 				assertion: func(t *testing.T, conn *websocket.Conn) {
 					initMsg := `{"type":"connection_init"}`
 					err := conn.WriteMessage(websocket.TextMessage, []byte(initMsg))
@@ -125,7 +125,7 @@ func TestNewHandlerFunc(t *testing.T) {
 				subprotocols:    []string{"unsupported-protocol"},
 			},
 			setup: func() testMocker {
-				return testMocker{handler: NewHandlerFunc(nil, nil)}
+				return testMocker{handler: graphqlws.NewHandlerFunc(nil, nil)}
 			},
 			want: Want{
 				assertion: func(t *testing.T, conn *websocket.Conn) {
@@ -211,66 +211,80 @@ func TestNewHandlerFunc(t *testing.T) {
 }
 
 func TestContextGenerators(t *testing.T) {
-	contextBuilderFunc := func() ContextGeneratorFunc {
-		return func(ctx context.Context, r *http.Request) (context.Context, error) {
-			return context.WithValue(ctx, contextKey("testKey"), "test value"), nil
+	t.Run("context value is visible to subscriber", func(t *testing.T) {
+		t.Parallel()
+
+		key := contextKey("testKey")
+		mockSvc := &fakeGraphQLService{}
+
+		handler := graphqlws.NewHandlerFunc(
+			mockSvc,
+			nil,
+			graphqlws.WithContextGenerator(graphqlws.ContextGeneratorFunc(func(ctx context.Context, r *http.Request) (context.Context, error) {
+				return context.WithValue(ctx, key, "test value"), nil
+			})),
+		)
+
+		server := httptest.NewServer(handler)
+		defer server.Close()
+
+		wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+		dialer := websocket.Dialer{Subprotocols: []string{graphqlws.ProtocolGraphQLTransportWS}}
+		conn, _, err := dialer.Dial(wsURL, nil)
+		if err != nil {
+			t.Fatalf("websocket dial failed: %v", err)
 		}
-	}
+		defer conn.Close()
 
-	contextBuilderErrorFunc := func() ContextGeneratorFunc {
-		return func(ctx context.Context, r *http.Request) (context.Context, error) {
-			return nil, errors.New("unexpected error generating context")
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"connection_init"}`)); err != nil {
+			t.Fatalf("failed to write connection_init: %v", err)
 		}
-	}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"1","type":"subscribe","payload":{"query":"subscription{}"}}`)); err != nil {
+			t.Fatalf("failed to write subscribe: %v", err)
+		}
 
-	type args struct {
-		Generator []ContextGenerator
-	}
-	type want struct {
-		Context context.Context
-		Error   string
-	}
-
-	testTable := map[string]struct {
-		Args args
-		Want want
-	}{
-		"No_options": {
-			Want: want{Context: context.Background()},
-		},
-		"With_context_generators": {
-			Args: args{Generator: []ContextGenerator{contextBuilderFunc()}},
-			Want: want{Context: context.WithValue(context.Background(), contextKey("testKey"), "test value")},
-		},
-		"With_context_generator_error": {
-			Args: args{Generator: []ContextGenerator{contextBuilderErrorFunc()}},
-			Want: want{Context: nil, Error: "unexpected error generating context"},
-		},
-	}
-
-	for name, tt := range testTable {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			req, err := http.NewRequest("GET", "/graphql", nil)
-			if err != nil {
-				t.Fatalf("failed to create request: %v", err)
-			}
-
-			ctx, err := buildContext(req, tt.Args.Generator)
-
-			if tt.Want.Error != "" {
-				if err == nil || err.Error() != tt.Want.Error {
-					t.Fatalf("expected error %q, got %v", tt.Want.Error, err)
+		deadline := time.Now().Add(1 * time.Second)
+		for {
+			calls := mockSvc.
+      ()
+			if len(calls) > 0 {
+				if got := calls[0].ctx.Value(key); got != "test value" {
+					t.Fatalf("expected context value %q, got %#v", "test value", got)
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("error generating context: %v", err)
+			if time.Now().After(deadline) {
+				t.Fatal("timed out waiting for Subscribe call")
 			}
-			if !reflect.DeepEqual(tt.Want.Context, ctx) {
-				t.Fatalf("unexpected context generated")
-			}
-		})
-	}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+
+	t.Run("context generator error rejects upgrade", func(t *testing.T) {
+		t.Parallel()
+
+		handler := graphqlws.NewHandlerFunc(
+			&fakeGraphQLService{},
+			nil,
+			graphqlws.WithContextGenerator(graphqlws.ContextGeneratorFunc(func(ctx context.Context, r *http.Request) (context.Context, error) {
+				return nil, errors.New("unexpected error generating context")
+			})),
+		)
+
+		server := httptest.NewServer(handler)
+		defer server.Close()
+
+		wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+		dialer := websocket.Dialer{Subprotocols: []string{graphqlws.ProtocolGraphQLTransportWS}}
+		_, resp, err := dialer.Dial(wsURL, nil)
+		if err == nil {
+			t.Fatal("expected websocket dial to fail")
+		}
+		if resp == nil {
+			t.Fatal("expected HTTP response on failed websocket upgrade")
+		}
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected status %d, got %d", http.StatusForbidden, resp.StatusCode)
+		}
+	})
 }

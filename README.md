@@ -2,7 +2,7 @@
 
 WebSocket transport for GraphQL servers in Go.
 
-The supported protocol is `graphql-transport-ws`.
+The supported protocol is `graphql-transport-ws` as defined in the spepecification: [GraphQL over WebSocket Protocol](https://github.com/graphql/graphql-over-http/blob/main/rfcs/GraphQLOverWebSocket.md).
 
 ## With graphql-go
 

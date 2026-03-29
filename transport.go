@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"sync"
 	"time"
 
@@ -64,6 +65,7 @@ const (
 	closeCodeConnectionInitTimeout     = 4408
 	closeCodeSubscriberAlreadyExists   = 4409
 	closeCodeTooManyInitialisationReqs = 4429
+	closeCodeInternalServerError       = websocket.CloseInternalServerErr
 )
 
 type operationMessage struct {
@@ -81,6 +83,7 @@ type subscribeMessagePayload struct {
 type wsConnection interface {
 	Close() error
 	ReadJSON(v any) error
+	SetReadDeadline(t time.Time) error
 	SetReadLimit(limit int64)
 	SetWriteDeadline(t time.Time) error
 	WriteControl(messageType int, data []byte, deadline time.Time) error
@@ -90,6 +93,7 @@ type wsConnection interface {
 type connection struct {
 	cancel       func()
 	maxOps       int
+	readIdleTime time.Duration
 	sub          Subscriber
 	writeTimeout time.Duration
 	ws           wsConnection
@@ -111,6 +115,12 @@ func transportWriteTimeout(d time.Duration) transportOption {
 	}
 }
 
+func transportReadIdleTimeout(d time.Duration) transportOption {
+	return func(conn *connection) {
+		conn.readIdleTime = max(d, 0)
+	}
+}
+
 // transportMaxOperations limits the number of concurrent subscribe operations per
 // connection. A value of 0 disables the limit. Negative values are treated
 // as 0 (no limit).
@@ -120,7 +130,7 @@ func transportMaxOperations(n int) transportOption {
 	}
 }
 
-func connectTransport(ctx context.Context, ws wsConnection, sub Subscriber, options ...transportOption) {
+func connectTransport(ctx context.Context, ws wsConnection, sub Subscriber, opts ...transportOption) {
 	conn := &connection{
 		sub: sub,
 		ws:  ws,
@@ -132,7 +142,7 @@ func connectTransport(ctx context.Context, ws wsConnection, sub Subscriber, opti
 		transportMaxOperations(100),
 	}
 
-	for _, opt := range append(defaultOpts, options...) {
+	for _, opt := range append(defaultOpts, opts...) {
 		opt(conn)
 	}
 
@@ -202,6 +212,19 @@ func (conn *connection) closeWithCode(code int, reason string) {
 	conn.cancel()
 }
 
+func (conn *connection) refreshReadDeadline() bool {
+	if conn.readIdleTime <= 0 {
+		return true
+	}
+
+	if err := conn.ws.SetReadDeadline(time.Now().Add(conn.readIdleTime)); err != nil {
+		conn.closeWithCode(closeCodeInternalServerError, "Internal server error")
+		return false
+	}
+
+	return true
+}
+
 func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 	defer conn.close()
 
@@ -230,6 +253,11 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 			return
 		case err := <-errChan:
 			// Read error occurred (e.g., client closed connection)
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() && initDone && conn.readIdleTime > 0 {
+				conn.closeWithCode(websocket.CloseNormalClosure, "Read idle timeout")
+				return
+			}
 			if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) && !errors.Is(err, io.EOF) && err.Error() != "connection closed" {
 				conn.closeWithCode(closeCodeBadRequest, "invalid message")
 			}
@@ -268,7 +296,15 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 				send("", typeConnectionAck, nil)
 				initDone = true
 
+				if !conn.refreshReadDeadline() {
+					return
+				}
+
 				continue
+			}
+
+			if !conn.refreshReadDeadline() {
+				return
 			}
 
 			err := conn.processMessages(ctx, msg, send, ops)

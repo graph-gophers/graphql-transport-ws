@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"reflect"
 	"sort"
 	"sync"
@@ -52,15 +53,19 @@ func (s *fakeTransportService) getCalls() []transportSubscribeCall {
 }
 
 type mockConnection struct {
-	in           chan json.RawMessage
-	out          chan json.RawMessage
-	closeCalled  chan bool
-	readLimit    int64
-	writeTimeout time.Duration
-	closeCode    int
-	closeReason  string
-	mtx          sync.Mutex
-	isClosed     bool
+	in                 chan json.RawMessage
+	out                chan json.RawMessage
+	closeCalled        chan bool
+	readDeadline       time.Time
+	readDeadlineCalls  int
+	failReadDeadlineAt int
+	setReadDeadlineErr error
+	readLimit          int64
+	writeTimeout       time.Duration
+	closeCode          int
+	closeReason        string
+	mtx                sync.Mutex
+	isClosed           bool
 }
 
 func newMockConnection() *mockConnection {
@@ -73,12 +78,56 @@ func newMockConnection() *mockConnection {
 
 // ReadJSON reads the next JSON-formatted message from the connection and unmarshals it
 func (ws *mockConnection) ReadJSON(v any) error {
-	msg, ok := <-ws.in
-	if !ok {
-		return errors.New("connection closed")
-	}
+	for {
+		ws.mtx.Lock()
+		deadline := ws.readDeadline
+		ws.mtx.Unlock()
 
-	return json.Unmarshal(msg, v)
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			return mockTimeoutError{}
+		}
+
+		wait := 10 * time.Millisecond
+		if !deadline.IsZero() {
+			remaining := time.Until(deadline)
+			if remaining < wait {
+				wait = remaining
+			}
+		}
+
+		select {
+		case msg, ok := <-ws.in:
+			if !ok {
+				return errors.New("connection closed")
+			}
+			return json.Unmarshal(msg, v)
+		case <-time.After(wait):
+		}
+	}
+}
+
+type mockTimeoutError struct{}
+
+func (mockTimeoutError) Error() string   { return "i/o timeout" }
+func (mockTimeoutError) Timeout() bool   { return true }
+func (mockTimeoutError) Temporary() bool { return true }
+
+var _ net.Error = mockTimeoutError{}
+
+func (ws *mockConnection) SetReadDeadline(t time.Time) error {
+	ws.mtx.Lock()
+	ws.readDeadlineCalls++
+	if ws.failReadDeadlineAt > 0 && ws.readDeadlineCalls == ws.failReadDeadlineAt {
+		err := ws.setReadDeadlineErr
+		if err == nil {
+			err = errors.New("set read deadline error")
+		}
+		ws.mtx.Unlock()
+		return err
+	}
+	ws.readDeadline = t
+	ws.mtx.Unlock()
+	return nil
 }
 
 // WriteJSON marshals the value v to JSON and sends it as a message over the connection
@@ -497,6 +546,68 @@ func TestConnect(t *testing.T) {
 				serverMessages: []string{},
 				assertClose:    true,
 				closeCode:      closeCodeConnectionInitTimeout,
+			},
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
+				if len(calls) != 0 {
+					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
+				}
+			},
+		},
+		"Read idle timeout after init": {
+			setup: setupTest,
+			args: Args{
+				options:        []transportOption{transportReadIdleTimeout(50 * time.Millisecond)},
+				clientMessages: []string{`{"type":"connection_init"}`},
+			},
+			want: Want{
+				serverMessages: []string{`{"type":"connection_ack"}`},
+				assertClose:    true,
+				closeCode:      websocket.CloseNormalClosure,
+			},
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
+				if len(calls) != 0 {
+					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
+				}
+			},
+		},
+		"SetReadDeadline failure after init closes socket": {
+			setup: func(t *testing.T) mocker {
+				h := setupTest(t)
+				h.conn.failReadDeadlineAt = 1
+				return h
+			},
+			args: Args{
+				options:        []transportOption{transportReadIdleTimeout(1 * time.Second)},
+				clientMessages: []string{`{"type":"connection_init"}`},
+			},
+			want: Want{
+				serverMessages: []string{`{"type":"connection_ack"}`},
+				assertClose:    true,
+				closeCode:      closeCodeInternalServerError,
+			},
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
+				if len(calls) != 0 {
+					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
+				}
+			},
+		},
+		"SetReadDeadline failure on refresh closes socket": {
+			setup: func(t *testing.T) mocker {
+				h := setupTest(t)
+				h.conn.failReadDeadlineAt = 2
+				return h
+			},
+			args: Args{
+				options: []transportOption{transportReadIdleTimeout(1 * time.Second)},
+				clientMessages: []string{
+					`{"type":"connection_init"}`,
+					`{"type":"pong"}`,
+				},
+			},
+			want: Want{
+				serverMessages: []string{`{"type":"connection_ack"}`},
+				assertClose:    true,
+				closeCode:      closeCodeInternalServerError,
 			},
 			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
 				if len(calls) != 0 {

@@ -44,15 +44,6 @@ func (s *fakeGraphQLService) Subscribe(ctx context.Context, document string, ope
 	return s.subscribeFn(ctx, document, operationName, variableValues)
 }
 
-func (s *fakeGraphQLService) getCalls() []subscribeCall {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	out := make([]subscribeCall, len(s.calls))
-	copy(out, s.calls)
-	return out
-}
-
 type fakeHTTPHandler struct {
 	calls chan *http.Request
 }
@@ -156,7 +147,7 @@ func TestNewHandlerFunc(t *testing.T) {
 				calls := make(chan *http.Request, 1)
 				mockHTTP := &fakeHTTPHandler{calls: calls}
 				return testMocker{
-					handler:  graphqlws.NewHandlerFunc(nil, mockHTTP),
+					handler:  NewHandlerFunc(nil, mockHTTP),
 					mockHTTP: mockHTTP,
 				}
 			},
@@ -254,7 +245,8 @@ func TestContextGenerators(t *testing.T) {
 
 		deadline := time.Now().Add(1 * time.Second)
 		for {
-			calls := mockSvc.getCalls()
+			calls := mockSvc.
+      ()
 			if len(calls) > 0 {
 				if got := calls[0].ctx.Value(key); got != "test value" {
 					t.Fatalf("expected context value %q, got %#v", "test value", got)

@@ -537,6 +537,26 @@ func TestConnect(t *testing.T) {
 				}
 			},
 		},
+		"Nil channel from subscriber returns operation error": {
+			setup: setupTest,
+			setupService: func(h mocker) {
+				h.mockSvc.subscribeFn = func(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error) {
+					return nil, nil
+				}
+			},
+			args: Args{
+				clientMessages: []string{`{"type":"connection_init"}`, `{"id":"1n","type":"subscribe","payload":{"query":"sub { hello }"}}`},
+			},
+			want: Want{
+				serverMessages: []string{`{"type":"connection_ack"}`, `{"id":"1n","type":"error","payload":[{"message":"subscriber returned nil channel"}]}`},
+				assertClose:    false,
+			},
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
+				if len(calls) != 1 {
+					t.Fatalf("expected 1 Subscribe call, got %d", len(calls))
+				}
+			},
+		},
 		"Connection init timeout": {
 			setup: setupTest,
 			args: Args{

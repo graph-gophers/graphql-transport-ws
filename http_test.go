@@ -296,3 +296,60 @@ func TestContextGenerators(t *testing.T) {
 		}
 	})
 }
+
+func TestWithCheckOrigin(t *testing.T) {
+	handler := graphqlws.NewHandlerFunc(
+		&fakeGraphQLService{},
+		nil,
+		graphqlws.WithCheckOrigin(func(r *http.Request) bool {
+			return r.Header.Get("Origin") == "https://trusted.example"
+		}),
+	)
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	t.Run("rejects untrusted origin", func(t *testing.T) {
+		dialer := websocket.Dialer{Subprotocols: []string{graphqlws.ProtocolGraphQLTransportWS}}
+		_, resp, err := dialer.Dial(wsURL, http.Header{"Origin": []string{"https://evil.example"}})
+		if err == nil {
+			t.Fatal("expected websocket dial to fail for untrusted origin")
+		}
+		if resp == nil {
+			t.Fatal("expected HTTP response on failed websocket upgrade")
+		}
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected status %d, got %d", http.StatusForbidden, resp.StatusCode)
+		}
+	})
+
+	t.Run("accepts trusted origin", func(t *testing.T) {
+		dialer := websocket.Dialer{Subprotocols: []string{graphqlws.ProtocolGraphQLTransportWS}}
+		conn, _, err := dialer.Dial(wsURL, http.Header{"Origin": []string{"https://trusted.example"}})
+		if err != nil {
+			t.Fatalf("websocket dial failed for trusted origin: %v", err)
+		}
+		defer conn.Close()
+
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"connection_init"}`)); err != nil {
+			t.Fatalf("failed to send connection_init: %v", err)
+		}
+
+		_, p, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("failed to read message from server: %v", err)
+		}
+
+		var msg struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(p, &msg); err != nil {
+			t.Fatalf("failed to unmarshal server message: %v", err)
+		}
+		if msg.Type != "connection_ack" {
+			t.Fatalf("expected connection_ack message, got %q", msg.Type)
+		}
+	})
+}

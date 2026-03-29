@@ -230,7 +230,7 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 
 	ops := newOperationMap()
 	initDone := false
-	msgChan := make(chan *operationMessage)
+	msgChan := make(chan *operationMessage, 1)
 	errChan := make(chan error, 1)
 
 	go func() {
@@ -240,7 +240,12 @@ func (conn *connection) readLoop(ctx context.Context, send sendFunc) {
 				errChan <- err
 				return
 			}
-			msgChan <- &msg
+
+			select {
+			case msgChan <- &msg:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 
@@ -386,6 +391,10 @@ func (conn *connection) runSubscription(ctx context.Context, id string, payload 
 	c, err := conn.sub.Subscribe(ctx, payload.Query, payload.OperationName, payload.Variables)
 	if err != nil {
 		send(id, typeError, errPayload(err))
+		return
+	}
+	if c == nil {
+		send(id, typeError, errPayload(errors.New("subscriber returned nil channel")))
 		return
 	}
 

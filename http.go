@@ -60,8 +60,10 @@ type Option interface {
 type options struct {
 	contextGenerators []ContextGenerator
 	readLimit         int64
+	readIdleTimeout   time.Duration
 	writeTimeout      time.Duration
 	hasReadLimit      bool
+	hasReadIdle       bool
 	hasWriteTimeout   bool
 	checkOrigin       func(*http.Request) bool
 	maxOperations     int
@@ -73,6 +75,10 @@ func (o *options) transportOptions() []transportOption {
 
 	if o.hasReadLimit {
 		opts = append(opts, transportReadLimit(o.readLimit))
+	}
+
+	if o.hasReadIdle {
+		opts = append(opts, transportReadIdleTimeout(o.readIdleTimeout))
 	}
 
 	if o.hasWriteTimeout {
@@ -113,6 +119,17 @@ func WithWriteTimeout(d time.Duration) Option {
 	return optionFunc(func(o *options) {
 		o.writeTimeout = d
 		o.hasWriteTimeout = true
+	})
+}
+
+// WithReadIdleTimeout sets a maximum idle duration for established websocket
+// connections after a successful connection_init handshake. When no client
+// message is received within this duration, the server closes the socket.
+// Pass 0 to disable idle timeout enforcement.
+func WithReadIdleTimeout(d time.Duration) Option {
+	return optionFunc(func(o *options) {
+		o.readIdleTimeout = d
+		o.hasReadIdle = true
 	})
 }
 

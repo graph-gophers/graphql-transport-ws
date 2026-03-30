@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	_ "embed"
-	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -13,30 +12,13 @@ import (
 	graphqlws "github.com/graph-gophers/graphql-transport-ws"
 )
 
-const schemaSDL = `
-	schema {
-		query: Query
-		subscription: Subscription
-	}
+var (
+	//go:embed index.html
+	graphiqlHTML []byte
 
-	type Query {
-		hello: String!
-	}
-
-	type Subscription {
-		"""
-		Emits a tick every second. Stops after count ticks (default: 10).
-		"""
-		ticks(count: Int): Tick!
-	}
-
-	type Tick {
-		at:     String!
-		number: Int!
-	}
-`
-
-// ----- resolvers -----
+	//go:embed schema.graphql
+	schemaSDL string
+)
 
 type resolver struct{}
 
@@ -56,8 +38,8 @@ func (*queryResolver) Hello() string { return "Hello from graphql-transport-ws!"
 
 func (*subscriptionResolver) Ticks(ctx context.Context, args struct{ Count *int32 }) <-chan *tickResolver {
 	limit := int32(10)
-	if args.Count != nil && *args.Count > 0 {
-		limit = *args.Count
+	if args.Count != nil {
+		limit = max(limit, *args.Count)
 	}
 	ch := make(chan *tickResolver)
 	go func() {
@@ -84,15 +66,8 @@ func (*subscriptionResolver) Ticks(ctx context.Context, args struct{ Count *int3
 func (r *tickResolver) At() string    { return r.at }
 func (r *tickResolver) Number() int32 { return r.number }
 
-// ----- GraphiQL UI -----
-
-//go:embed index.html
-var graphiqlHTML string
-
-// ----- main -----
-
 func main() {
-	schema := graphql.MustParseSchema(schemaSDL, &resolver{})
+	schema := graphql.MustParseSchema(schemaSDL, &resolver{}, graphql.UseStringDescriptions())
 	mux := http.NewServeMux()
 
 	// GraphiQL UI
@@ -103,11 +78,11 @@ func main() {
 		}
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, graphiqlHTML)
+		w.Write(graphiqlHTML)
 	})
 
 	// GraphQL endpoint — handles both HTTP POST and WebSocket (graphql-transport-ws)

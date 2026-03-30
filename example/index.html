@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>GraphiQL</title>
+  <link rel="stylesheet" href="https://unpkg.com/graphiql@3/graphiql.min.css" />
+  <style>
+    html,
+    body,
+    #graphiql {
+      height: 100%;
+      margin: 0;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="graphiql"></div>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/graphiql@3/graphiql.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/graphql-ws@5/umd/graphql-ws.min.js" crossorigin="anonymous"></script>
+  <script>
+    const wsClient = graphqlWs.createClient({ url: 'ws://localhost:8080/graphql' });
+    const fetcher = GraphiQL.createFetcher({ url: '/graphql', wsClient });
+    const root = ReactDOM.createRoot(document.getElementById('graphiql'));
+    root.render(React.createElement(GraphiQL, {
+      fetcher,
+      defaultQuery: 'subscription {\n  ticks(count: 10) {\n    at\n    number\n  }\n}',
+    }));
+  </script>
+</body>
+
+</html>

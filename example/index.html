@@ -22,7 +22,9 @@
   <script src="https://unpkg.com/graphiql@3/graphiql.min.js" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/graphql-ws@5/umd/graphql-ws.min.js" crossorigin="anonymous"></script>
   <script>
-    const wsClient = graphqlWs.createClient({ url: 'ws://localhost:8080/graphql' });
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = wsProtocol + '//' + window.location.host + '/graphql';
+    const wsClient = graphqlWs.createClient({ url: wsUrl });
     const fetcher = GraphiQL.createFetcher({ url: '/graphql', wsClient });
     const root = ReactDOM.createRoot(document.getElementById('graphiql'));
     root.render(React.createElement(GraphiQL, {

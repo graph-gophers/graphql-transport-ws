@@ -81,6 +81,7 @@ func TestNewHandlerFunc(t *testing.T) {
 
 	type Want struct {
 		assertion           func(t *testing.T, conn *websocket.Conn)
+		checkHTTP           func(t *testing.T, resp *http.Response)
 		checkError          func(t *testing.T, err error)
 		expectedSubprotocol string
 	}
@@ -102,29 +103,7 @@ func TestNewHandlerFunc(t *testing.T) {
 			want: Want{
 				expectedSubprotocol: graphqlws.ProtocolGraphQLTransportWS,
 				assertion: func(t *testing.T, conn *websocket.Conn) {
-					initMsg := `{"type":"connection_init"}`
-					err := conn.WriteMessage(websocket.TextMessage, []byte(initMsg))
-					if err != nil {
-						t.Fatalf("failed to send connection_init: %v", err)
-					}
-
-					_, p, err := conn.ReadMessage()
-					if err != nil {
-						t.Fatalf("failed to read message from server: %v", err)
-					}
-
-					var msg struct {
-						Type string `json:"type"`
-					}
-
-					err = json.Unmarshal(p, &msg)
-					if err != nil {
-						t.Fatalf("failed to unmarshal server message: %v", err)
-					}
-
-					if msg.Type != "connection_ack" {
-						t.Fatalf("expected connection_ack message, got %q", msg.Type)
-					}
+					requireConnectionAck(t, conn)
 				},
 			},
 		},
@@ -161,7 +140,45 @@ func TestNewHandlerFunc(t *testing.T) {
 				}
 			},
 			want: Want{
-				assertion: func(t *testing.T, conn *websocket.Conn) {},
+				checkHTTP: func(t *testing.T, resp *http.Response) {
+					if resp.StatusCode != http.StatusOK {
+						t.Fatalf("expected status %d, got %d", http.StatusOK, resp.StatusCode)
+					}
+				},
+			},
+		},
+		"HTTP fallback nil handler returns 404": {
+			setup: func() testMocker {
+				return testMocker{handler: graphqlws.NewHandlerFunc(nil, nil)}
+			},
+			want: Want{
+				checkHTTP: func(t *testing.T, resp *http.Response) {
+					if resp.StatusCode != http.StatusNotFound {
+						t.Fatalf("expected status %d, got %d", http.StatusNotFound, resp.StatusCode)
+					}
+				},
+			},
+		},
+		"missing websocket subprotocol closes connection": {
+			args: Args{
+				isWebSocketTest: true,
+			},
+			setup: func() testMocker {
+				mockSvc := &fakeGraphQLService{}
+				return testMocker{handler: graphqlws.NewHandlerFunc(mockSvc, nil)}
+			},
+			want: Want{
+				assertion: func(t *testing.T, conn *websocket.Conn) {
+					if conn.Subprotocol() != "" {
+						t.Fatalf("expected no subprotocol to be selected, got %q", conn.Subprotocol())
+					}
+
+					var closeError *websocket.CloseError
+					_, _, err := conn.ReadMessage()
+					if !errors.As(err, &closeError) {
+						t.Fatalf("expected server to close connection without protocol, got err=%v", err)
+					}
+				},
 			},
 		},
 	}
@@ -176,9 +193,14 @@ func TestNewHandlerFunc(t *testing.T) {
 			defer server.Close()
 
 			if !tt.args.isWebSocketTest {
-				_, err := http.Get(server.URL)
+				resp, err := http.Get(server.URL)
 				if err != nil {
 					t.Fatalf("HTTP fallback request failed: %v", err)
+				}
+				defer resp.Body.Close()
+
+				if tt.want.checkHTTP != nil {
+					tt.want.checkHTTP(t, resp)
 				}
 
 				if mocker.mockHTTP != nil && mocker.mockHTTP.calls != nil {
@@ -333,24 +355,32 @@ func TestWithCheckOrigin(t *testing.T) {
 		}
 		defer conn.Close()
 
-		err = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"connection_init"}`))
-		if err != nil {
-			t.Fatalf("failed to send connection_init: %v", err)
-		}
-
-		_, p, err := conn.ReadMessage()
-		if err != nil {
-			t.Fatalf("failed to read message from server: %v", err)
-		}
-
-		var msg struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(p, &msg); err != nil {
-			t.Fatalf("failed to unmarshal server message: %v", err)
-		}
-		if msg.Type != "connection_ack" {
-			t.Fatalf("expected connection_ack message, got %q", msg.Type)
-		}
+		requireConnectionAck(t, conn)
 	})
+}
+
+func requireConnectionAck(t *testing.T, conn *websocket.Conn) {
+	t.Helper()
+
+	err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"connection_init"}`))
+	if err != nil {
+		t.Fatalf("failed to send connection_init: %v", err)
+	}
+
+	_, p, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read message from server: %v", err)
+	}
+
+	var msg struct {
+		Type string `json:"type"`
+	}
+
+	if err := json.Unmarshal(p, &msg); err != nil {
+		t.Fatalf("failed to unmarshal server message: %v", err)
+	}
+
+	if msg.Type != "connection_ack" {
+		t.Fatalf("expected connection_ack message, got %q", msg.Type)
+	}
 }

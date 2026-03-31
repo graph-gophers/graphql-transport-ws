@@ -5,7 +5,7 @@ schema {
 
 type Query {
     """
-    Prints a frendly greeting. This is just a placeholder query to satisfy the requirement that a GraphQL schema must have a query type with at least one field.
+    Prints a friendly greeting. This is just a placeholder query to satisfy the requirement that a GraphQL schema must have a query type with at least one field.
     """
     hello: String!
 }

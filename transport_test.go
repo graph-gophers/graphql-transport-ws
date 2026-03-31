@@ -9,6 +9,7 @@ import (
 	"net"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -318,6 +319,7 @@ func TestConnect(t *testing.T) {
 		setupService func(h mocker)
 		args         Args
 		want         Want
+		verifyMsgs   func(t *testing.T, messages []json.RawMessage)
 		verifyCalls  func(t *testing.T, calls []transportSubscribeCall)
 	}{
 		"Successful subscription": {
@@ -389,6 +391,21 @@ func TestConnect(t *testing.T) {
 				serverMessages: []string{},
 				assertClose:    true,
 				closeCode:      closeCodeBadRequest,
+			},
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
+				if len(calls) != 0 {
+					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
+				}
+			},
+		},
+		"Connection init payload object is accepted": {
+			setup: setupTest,
+			args: Args{
+				clientMessages: []string{`{"type":"connection_init","payload":{"token":"abc"}}`},
+			},
+			want: Want{
+				serverMessages: []string{`{"type":"connection_ack"}`},
+				assertClose:    false,
 			},
 			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
 				if len(calls) != 0 {
@@ -510,6 +527,21 @@ func TestConnect(t *testing.T) {
 				serverMessages: []string{`{"type":"connection_ack"}`},
 				assertClose:    true,
 				closeCode:      closeCodeBadRequest,
+			},
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
+				if len(calls) != 0 {
+					t.Fatalf("expected 0 Subscribe calls, got %d", len(calls))
+				}
+			},
+		},
+		"Complete with unknown ID is ignored": {
+			setup: setupTest,
+			args: Args{
+				clientMessages: []string{`{"type":"connection_init"}`, `{"id":"unknown","type":"complete"}`},
+			},
+			want: Want{
+				serverMessages: []string{`{"type":"connection_ack"}`},
+				assertClose:    false,
 			},
 			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
 				if len(calls) != 0 {
@@ -667,6 +699,64 @@ func TestConnect(t *testing.T) {
 				}
 			},
 		},
+		"Negative max operations disables limit": {
+			setup: setupTest,
+			setupService: func(h mocker) {
+				c := make(chan any)
+				h.mockSvc.subscribeFn = func(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error) {
+					return c, nil
+				}
+			},
+			args: Args{
+				options: []transportOption{transportMaxOperations(-1)},
+				clientMessages: []string{
+					`{"type":"connection_init"}`,
+					`{"id":"1","type":"subscribe","payload":{"query":"sub { hello }"}}`,
+					`{"id":"2","type":"subscribe","payload":{"query":"sub { hello }"}}`,
+				},
+			},
+			want: Want{
+				serverMessages: []string{`{"type":"connection_ack"}`},
+				assertClose:    false,
+			},
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
+				if len(calls) != 2 {
+					t.Fatalf("expected 2 Subscribe calls, got %d", len(calls))
+				}
+			},
+		},
+		"Marshal error in subscription sends operation error": {
+			setup: setupTest,
+			setupService: func(h mocker) {
+				c := make(chan any, 1)
+				c <- struct {
+					Bad func()
+				}{Bad: func() {}}
+				close(c)
+				h.mockSvc.subscribeFn = func(ctx context.Context, document string, operationName string, variableValues map[string]any) (<-chan any, error) {
+					return c, nil
+				}
+			},
+			args: Args{
+				clientMessages: []string{`{"type":"connection_init"}`, `{"id":"1","type":"subscribe","payload":{"query":"sub { hello }"}}`},
+			},
+			want: Want{assertClose: false},
+			verifyMsgs: func(t *testing.T, messages []json.RawMessage) {
+				if len(messages) != 3 {
+					t.Fatalf("unexpected number of messages received: want=%d got=%d", 3, len(messages))
+				}
+
+				requireEqualJSON(t, `{"type":"connection_ack"}`, messages[0], "Message 0 mismatch")
+				requireMessageType(t, messages[1], "error")
+				requireErrorMessageContains(t, messages[1], "failed to marshal payload")
+				requireEqualJSON(t, `{"id":"1","type":"complete"}`, messages[2], "Message 2 mismatch")
+			},
+			verifyCalls: func(t *testing.T, calls []transportSubscribeCall) {
+				if len(calls) != 1 {
+					t.Fatalf("expected 1 Subscribe call, got %d", len(calls))
+				}
+			},
+		},
 		"Unknown message type closes socket": {
 			setup: setupTest,
 			args: Args{
@@ -726,15 +816,19 @@ func TestConnect(t *testing.T) {
 
 			receivedMessages := receiveTestMessages(t, h)
 
-			if len(tt.want.serverMessages) != len(receivedMessages) {
-				t.Fatalf("unexpected number of messages received: want=%d got=%d", len(tt.want.serverMessages), len(receivedMessages))
-			}
-
-			for i, expectedMsg := range tt.want.serverMessages {
-				if i >= len(receivedMessages) {
-					break
+			if tt.verifyMsgs != nil {
+				tt.verifyMsgs(t, receivedMessages)
+			} else {
+				if len(tt.want.serverMessages) != len(receivedMessages) {
+					t.Fatalf("unexpected number of messages received: want=%d got=%d", len(tt.want.serverMessages), len(receivedMessages))
 				}
-				requireEqualJSON(t, expectedMsg, receivedMessages[i], fmt.Sprintf("Message %d mismatch", i))
+
+				for i, expectedMsg := range tt.want.serverMessages {
+					if i >= len(receivedMessages) {
+						break
+					}
+					requireEqualJSON(t, expectedMsg, receivedMessages[i], fmt.Sprintf("Message %d mismatch", i))
+				}
 			}
 
 			if tt.want.assertClose {
@@ -787,6 +881,44 @@ func requireEqualJSON(t *testing.T, expected string, actual json.RawMessage, msg
 			t.Fatalf("expected JSON %v got %v", expJSON, actJSON)
 		}
 		t.Fatalf("%s: expected %v got %v", msg, expJSON, actJSON)
+	}
+}
+
+func requireMessageType(t *testing.T, actual json.RawMessage, wantType string) {
+	t.Helper()
+
+	var msg struct {
+		Type string `json:"type"`
+	}
+
+	if err := json.Unmarshal(actual, &msg); err != nil {
+		t.Fatalf("failed to unmarshal message: %v", err)
+	}
+
+	if msg.Type != wantType {
+		t.Fatalf("unexpected message type: want=%q got=%q", wantType, msg.Type)
+	}
+}
+
+func requireErrorMessageContains(t *testing.T, actual json.RawMessage, substr string) {
+	t.Helper()
+
+	var msg struct {
+		Payload []struct {
+			Message string `json:"message"`
+		} `json:"payload"`
+	}
+
+	if err := json.Unmarshal(actual, &msg); err != nil {
+		t.Fatalf("failed to unmarshal error message: %v", err)
+	}
+
+	if len(msg.Payload) == 0 {
+		t.Fatalf("expected non-empty error payload")
+	}
+
+	if !strings.Contains(msg.Payload[0].Message, substr) {
+		t.Fatalf("error message %q does not contain %q", msg.Payload[0].Message, substr)
 	}
 }
 

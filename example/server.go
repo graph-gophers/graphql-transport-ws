@@ -38,8 +38,8 @@ func (*queryResolver) Hello() string { return "Hello from graphql-transport-ws!"
 
 func (*subscriptionResolver) Ticks(ctx context.Context, args struct{ Count *int32 }) <-chan *tickResolver {
 	limit := int32(10)
-	if args.Count != nil {
-		limit = max(limit, *args.Count)
+	if args.Count != nil && *args.Count > 0 {
+		limit = *args.Count
 	}
 	ch := make(chan *tickResolver)
 	go func() {
@@ -53,7 +53,12 @@ func (*subscriptionResolver) Ticks(ctx context.Context, args struct{ Count *int3
 				return
 			case t := <-ticker.C:
 				n++
-				ch <- &tickResolver{at: t.UTC().Format(time.RFC3339), number: n}
+				tick := &tickResolver{at: t.UTC().Format(time.RFC3339), number: n}
+				select {
+				case <-ctx.Done():
+					return
+				case ch <- tick:
+				}
 				if n >= limit {
 					return
 				}

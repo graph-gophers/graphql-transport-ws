@@ -50,6 +50,6 @@ Connect to the GraphQL endpoint (e.g. `/graphql`) with WebSocket subprotocol `gr
 
 - Each WebSocket connection is handled by a single backend replica, and active subscription state is kept in memory for that connection.
 - If a backend node is rotated or dies, client connections to that node are dropped and in-flight subscriptions end.
-- Clients should reconnect, send `connection_init` again, and resubscribe. Resume from the exact prior event is not built in.
+- Clients should reconnect, send `connection_init` again, and resubscribe. Resuming from the exact prior event is not built in.
 - If you need continuity after reconnects, implement application-level replay (for example, cursors/offsets backed by a durable event source).
 - In production, set `WithCheckOrigin(...)` and consider limits/timeouts such as `WithMaxSubscriptions`, `WithReadLimit`, `WithReadIdleTimeout`, and `WithWriteTimeout`.
